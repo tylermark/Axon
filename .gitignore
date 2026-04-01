@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment / secrets
+.env
+.env.*
+credentials.json
+
+# Weights & Biases
+wandb/
+
+# Model artifacts
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Data
+data/
+*.pdf
+
+# Jupyter
+.ipynb_checkpoints/

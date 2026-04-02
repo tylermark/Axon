@@ -3,62 +3,95 @@
 ## Project Identity
 
 **Name:** Axon  
-**Tagline:** *From lines to load paths. Vector-native. Physics-proven. Zero rasterization.*  
-**Full Title:** Axon — A Neuro-Symbolic and Physics-Informed Graph Diffusion Framework for Universal Vector-Native Wall Extraction in Architectural Floor Plans  
+**Tagline:** *From floor plan to fabrication. Any PDF. Your products. Zero guesswork.*  
+**Full Title:** Axon — A Neuro-Symbolic Graph Diffusion Framework for Universal Vector-Native Wall Extraction and Automated Prefabricated Component Placement  
 **Owner:** Tyler (Beteagu / Capsule Manufacturing)  
 **Repo Root:** This directory  
 
 ---
 
-## High-Level Architecture
+## What Axon Does
 
-This project implements an end-to-end pipeline that **never rasterizes**. It reads raw PDF PostScript operators, builds a geometric graph, refines it through diffusion + symbolic constraints + physics simulation, and outputs IFC-compliant JSON.
+A GC or architect uploads a PDF floor plan. Axon reads every wall, room, and structural element — then maps it against Capsule Manufacturing's products using a Knowledge Graph, panelizes walls and places products using Deep Reinforcement Learning, and exports a manufacture-ready BIM model with real product SKUs.
 
 ```
-PDF Input
-  → [1] Vector Parser (PostScript → raw graph G₀)
-  → [2] Cross-Modal Tokenizer (vector ↔ raster fusion)
-  → [3] Graph Diffusion Engine (DDPM denoising → refined graph G*)
-  → [4] NeSy SAT Solver (differentiable constraint enforcement)
-  → [5] Persistent Homology Loss (topological integrity)
-  → [6] PINN / FEA Layer (structural viability)
-  → [7] IFC Serializer (structured JSON / IFC output)
+┌─────────────────────────────────────────────────────────────┐
+│  LAYER 1 — EXTRACTION                                        │
+│  "Read and understand any floor plan PDF"                    │
+│                                                              │
+│  PDF Input                                                   │
+│    → [1] Vector Parser (PostScript → raw graph G₀)  ✅ DONE  │
+│    → [2] Cross-Modal Tokenizer (vector ↔ raster fusion)      │
+│    → [3] Graph Diffusion Engine (DDPM → refined graph G*)    │
+│    → [4] NeSy SAT Solver (geometric constraint enforcement)  │
+│                                                              │
+│  Output: Clean structural graph + room semantics             │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│  LAYER 2 — PREFAB INTELLIGENCE                               │
+│  "Map it to Capsule's world and make it buildable"           │
+│                                                              │
+│  Structural Graph                                            │
+│    → [5] Knowledge Graph (Capsule product catalog + rules)   │
+│    → [6] Wall Classifier (bearing/partition/shear/fire)      │
+│    → [7] DRL Panelizer (walls → CFS panel assemblies)        │
+│    → [8] DRL Placer (rooms → Capsule pods/products)          │
+│    → [9] Feasibility Scorer (prefab % + blockers)            │
+│    → [10] BOM Generator (quantities + cost)                  │
+│    → [11] BIM Transplant + IFC Export (3D model output)      │
+│                                                              │
+│  Output: Prefab report, panel schedule, BOM, IFC model       │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-Pre-training pipeline (offline):
+Training pipeline (offline):
 ```
-Unlabeled PDFs → [8] Masked Primitive Modeling (SSL)
-                → [9] SFT on curated datasets
-                → [10] GRPO quality annealing
+Unlabeled PDFs → Masked Primitive Modeling (SSL)
+               → SFT on curated datasets
+               → GRPO quality annealing
+DRL training   → Simulated panelization episodes on extracted graphs
 ```
 
 ---
 
 ## Agent System
 
-This project uses **specialized Claude Code agents** organized into teams. Every agent has a narrow scope and communicates through well-defined interfaces. See `AGENTS.md` for full definitions.
+### Layer 1 — Extraction Agents
 
-### Agent Roster
+| Agent ID | Name | Scope | Status |
+|----------|------|-------|--------|
+| `parse` | **Parser Agent** | PDF ingestion, PostScript extraction, raw graph G₀ | ✅ DONE |
+| `token` | **Tokenizer Agent** | Cross-modal transformer, vector-raster TEF fusion | TODO |
+| `diffuse` | **Diffusion Agent** | DDPM graph denoising, HDSE encoding | TODO |
+| `constrain` | **Constraint Agent** | Differentiable SAT solver, geometric axioms, topo regularization | TODO |
+
+### Layer 2 — Prefab Intelligence Agents
 
 | Agent ID | Name | Scope |
 |----------|------|-------|
-| `parse` | **Parser Agent** | PDF ingestion, PostScript operator extraction, raw graph G₀ construction |
-| `token` | **Tokenizer Agent** | Cross-modal transformer, vector-raster alignment, TEF fusion |
-| `diffuse` | **Diffusion Agent** | DDPM graph denoising, HDSE encoding, reverse process |
-| `constrain` | **Constraint Agent** | Differentiable SAT solver, NeSy layer, architectural axiom enforcement |
-| `topo` | **Topology Agent** | Persistent homology, Betti numbers, Wasserstein distance loss |
-| `physics` | **Physics Agent** | PINN, FEA discretization, JAX-SSO, load-path validation |
-| `serial` | **Serializer Agent** | IFC alignment, JSON vocabulary, IfcWallStandardCase mapping |
-| `train` | **Training Agent** | SSL pre-training (MPM), SFT, GRPO, data engine |
-| `integrate` | **Integration Agent** | End-to-end pipeline, module interfaces, CLI/API surface |
-| `qa` | **QA Agent** | Unit tests, integration tests, metric validation, regression |
-| `review-arch` | **Architecture Reviewer** | Step 1 review — design correctness, interface contracts |
-| `review-eng` | **Engineering Reviewer** | Step 2 review — code quality, performance, edge cases |
+| `catalog` | **Knowledge Graph Agent** | Product catalog, machine specs, fabrication constraints, compliance rules |
+| `classify` | **Wall Classifier Agent** | Structural classification: bearing, partition, shear, fire-rated, envelope |
+| `drl` | **DRL Agent** | Panelization + product placement via Deep Reinforcement Learning |
+| `feasibility` | **Feasibility Agent** | Prefab percentage scoring, blocker ID, design suggestions |
+| `bom` | **BOM Agent** | Bill of materials, quantity takeoffs, cost estimation |
+| `transplant` | **BIM Transplant Agent** | KG → BIM family lookup, 3D model assembly, IFC serialization |
+
+### Infrastructure Agents
+
+| Agent ID | Name | Scope |
+|----------|------|-------|
+| `train` | **Training Agent** | SSL pre-training (MPM), SFT, GRPO, DRL training |
+| `integrate` | **Integration Agent** | End-to-end pipeline, interfaces, CLI |
+| `qa` | **QA Agent** | All testing, benchmarks, regression |
+| `review-arch` | **Architecture Reviewer** | Step 1 — design correctness, interface contracts |
+| `review-eng` | **Engineering Reviewer** | Step 2 — code quality, performance, edge cases |
 
 ### Dispatching Rules
 
 1. **One agent per task.** Never assign overlapping scope.
-2. **Interface-first.** Before an agent writes implementation, it must define its input/output contract in `docs/interfaces/`.
+2. **Interface-first.** Define input/output contract in `docs/interfaces/` before implementation.
 3. **No agent writes tests for its own code.** Testing is always `qa` agent's job.
 4. **All code passes two review stages** before merging (see `REVIEW.md`).
 
@@ -68,66 +101,51 @@ This project uses **specialized Claude Code agents** organized into teams. Every
 
 ```
 axon/
-├── claude.md                    # This file — project-level instructions
-├── AGENTS.md                    # Agent team definitions and responsibilities
-├── REVIEW.md                    # 2-step review system specification
-├── ARCHITECTURE.md              # Technical architecture deep dive
-├── TASKS.md                     # Task breakdown and dependency graph
-├── MODEL_SPEC.md                # Original thesis model specification
+├── claude.md
+├── AGENTS.md
+├── REVIEW.md
+├── ARCHITECTURE.md
+├── TASKS.md
+├── MODEL_SPEC.md
 ├── src/
-│   ├── parser/                  # [parse] PDF vector extraction
-│   │   ├── operators.py         # PostScript operator registry
-│   │   ├── extractor.py         # Content stream parser (PyMuPDF)
-│   │   ├── graph_builder.py     # Raw graph G₀ construction
-│   │   └── filters.py           # Decorative element filtering
+│   │── # ═══ LAYER 1: EXTRACTION ═══
+│   ├── parser/                  # [parse] ✅ DONE
 │   ├── tokenizer/               # [token] Cross-modal alignment
-│   │   ├── vector_tokenizer.py  # Operator → token sequence
-│   │   ├── vision_backbone.py   # HRNet / Swin feature extraction
-│   │   └── cross_attention.py   # Bidirectional TEF fusion
 │   ├── diffusion/               # [diffuse] Graph DDPM
-│   │   ├── forward.py           # Noise injection process
-│   │   ├── reverse.py           # Denoising / inference
-│   │   ├── hdse.py              # Hierarchical Distance Structural Encoding
-│   │   └── scheduler.py         # Noise schedule configuration
-│   ├── constraints/             # [constrain] NeSy SAT
-│   │   ├── sat_solver.py        # Differentiable SAT via convex decomposition
-│   │   ├── axioms.py            # Architectural constraint definitions
-│   │   └── projector.py         # Gradient projection for snapping
-│   ├── topology/                # [topo] Persistent homology
-│   │   ├── persistence.py       # Cubical complex + persistence diagrams
-│   │   ├── wasserstein.py       # Sinkhorn-Knopp optimal transport
-│   │   └── tafl.py              # Topology-Aware Focal Loss
-│   ├── physics/                 # [physics] PINN / FEA
-│   │   ├── fem_mesh.py          # MITC4 + Euler-Bernoulli discretization
-│   │   ├── pinn.py              # PE-PINN with sinusoidal activations
-│   │   ├── load_paths.py        # Dead/live load transfer computation
-│   │   └── jax_solver.py        # JAX-SSO integration
-│   ├── serializer/              # [serial] IFC output
-│   │   ├── json_vocab.py        # Custom compressed JSON vocabulary
-│   │   ├── ifc_mapper.py        # IfcWallStandardCase + relations
-│   │   └── exporter.py          # File output (JSON, IFC, STEP)
-│   ├── training/                # [train] Pre-training + fine-tuning
-│   │   ├── mpm.py               # Masked Primitive Modeling
-│   │   ├── data_engine.py       # Unlabeled PDF corpus loader
-│   │   ├── sft.py               # Supervised fine-tuning
-│   │   └── grpo.py              # Group Relative Policy Optimization
+│   ├── constraints/             # [constrain] NeSy SAT + topo regularization
+│   │
+│   │── # ═══ LAYER 2: PREFAB INTELLIGENCE ═══
+│   ├── knowledge_graph/         # [catalog] Product KG
+│   │   ├── schema.py            # KG node/edge types, entity definitions
+│   │   ├── loader.py            # Ingest product data into graph
+│   │   ├── query.py             # Query API for panel/pod/machine lookup
+│   │   └── data/                # Product data files
+│   │       ├── panels.json
+│   │       ├── pods.json
+│   │       ├── machines.json
+│   │       └── connections.json
+│   ├── classifier/              # [classify] Wall type classification
+│   ├── drl/                     # [drl] Reinforcement learning
+│   │   ├── env.py               # Floor plan environment (state, actions)
+│   │   ├── agent.py             # DRL policy network
+│   │   ├── panelizer.py         # Wall → panel segmentation actions
+│   │   ├── placer.py            # Room → product placement actions
+│   │   └── reward.py            # Reward function (SPUR, waste, violations)
+│   ├── feasibility/             # [feasibility] Prefab scoring
+│   ├── bom/                     # [bom] Bill of materials
+│   ├── transplant/              # [transplant] BIM Library Transplant + IFC
+│   │   ├── matcher.py           # KG lookup → BIM family matching
+│   │   ├── assembler.py         # 3D model assembly from placed panels
+│   │   └── ifc_export.py        # IFC serialization (ISO 16739-1:2024)
+│   │
+│   │── # ═══ INFRASTRUCTURE ═══
+│   ├── training/                # [train] Pre-training + DRL training
 │   └── pipeline/                # [integrate] End-to-end
-│       ├── runner.py            # Full inference pipeline
-│       ├── config.py            # Global configuration
-│       └── cli.py               # Command-line interface
-├── tests/                       # [qa] All testing
-│   ├── unit/                    # Per-module unit tests
-│   ├── integration/             # Cross-module tests
-│   ├── benchmarks/              # Metric validation (HIoU, GED, Betti, etc.)
-│   └── fixtures/                # Test PDFs and ground truth data
+├── tests/
 ├── docs/
-│   ├── interfaces/              # Module I/O contracts (written before code)
-│   ├── decisions/               # Architecture Decision Records (ADRs)
-│   └── metrics/                 # Evaluation metric specifications
+│   ├── interfaces/
+│   └── decisions/
 └── scripts/
-    ├── pretrain.sh              # Launch SSL pre-training
-    ├── finetune.sh              # Launch SFT + GRPO
-    └── evaluate.sh              # Run full benchmark suite
 ```
 
 ---
@@ -136,14 +154,14 @@ axon/
 
 | Layer | Technology | Rationale |
 |-------|-----------|-----------|
-| PDF Parsing | PyMuPDF (fitz) | Direct PostScript operator access, fast C binding |
-| Core ML | PyTorch 2.x | Graph operations, diffusion, autograd |
-| Graph Networks | PyG (PyTorch Geometric) | Native sparse graph ops, message passing |
-| Physics/FEA | JAX + JAX-SSO | Differentiable FEA, adjoint method, vmap |
-| Topology | giotto-tda / gudhi | Persistent homology, persistence diagrams |
-| Vision Backbone | timm (HRNet / Swin) | Pretrained multi-scale feature extraction |
-| Serialization | IfcOpenShell | IFC schema compliance, ISO 16739-1:2024 |
-| Experiment Tracking | Weights & Biases | Metric logging, hyperparameter sweeps |
+| PDF Parsing | PyMuPDF (fitz) | Direct PostScript operator access |
+| Core ML | PyTorch 2.x | Graph ops, diffusion, autograd |
+| Graph Networks | PyG (PyTorch Geometric) | Sparse graph ops, message passing |
+| Knowledge Graph | Neo4j or NetworkX + JSON | Structured product catalog queries |
+| Reinforcement Learning | Stable-Baselines3 / CleanRL | DRL for panelization + placement |
+| Vision Backbone | timm (HRNet / Swin) | Multi-scale raster feature extraction |
+| BIM/IFC | IfcOpenShell | IFC schema compliance |
+| Experiment Tracking | Weights & Biases | Metric logging, sweeps |
 | Package Management | uv | Fast, deterministic Python env |
 
 ---
@@ -154,65 +172,26 @@ axon/
 - Python 3.11+, type hints on all public functions
 - Docstrings: Google style
 - Formatting: `ruff format`, linting: `ruff check`
-- No wildcard imports. Explicit is better.
 
 ### Branching
 - `main` — stable, reviewed code only
 - `dev/<agent-id>/<feature>` — agent working branches
-- `review/<agent-id>/<feature>` — branches under review
 
 ### Commit Messages
 ```
 [agent-id] scope: short description
-
-Body explaining what changed and why.
-Refs: TASKS.md #task-number
 ```
 
 ### Interface Contracts
-Every module boundary must have a typed contract in `docs/interfaces/` **before** implementation begins. Format:
-
-```python
-# docs/interfaces/parser_to_tokenizer.py
-from dataclasses import dataclass
-from typing import list
-
-@dataclass
-class RawGraph:
-    """Output of Parser → Input of Tokenizer"""
-    nodes: np.ndarray          # (N, 2) float64 — continuous coordinates
-    edges: np.ndarray          # (E, 2) int64 — node index pairs
-    stroke_widths: np.ndarray  # (E,) float64
-    stroke_colors: np.ndarray  # (E, 4) float64 — RGBA
-    operator_types: list[str]  # per-edge: 'lineto' | 'curveto' | 'closepath'
-    transform_stack: list[np.ndarray]  # cumulative CTM per path
-```
+Every module boundary must have a typed contract in `docs/interfaces/` before implementation begins.
 
 ---
 
 ## Critical Constraints
 
-1. **Vector-native only.** Rasterization is used solely for cross-modal context — never as a primary representation. The pipeline must work without raster fallback for born-digital PDFs.
-2. **Differentiable end-to-end.** Every loss component (reconstruction, SAT, topology, physics) must be differentiable. No detach() hacks that break gradient flow.
-3. **IFC compliance is non-negotiable.** Output must import cleanly into Revit 2024+ and ArchiCAD 27+.
-4. **Test before merge.** No code enters `main` without passing QA agent's test suite and both review stages.
-5. **Interfaces before implementation.** Agents define contracts first, get approval, then build.
-
----
-
-## How to Run Agents
-
-Each agent is invoked as a Claude Code sub-agent with its scope document loaded:
-
-```bash
-# Example: dispatch the Parser Agent
-claude-code --agent parse --context "AGENTS.md#parser-agent" --task "TASKS.md#P-001"
-
-# Example: dispatch QA after Parser completes
-claude-code --agent qa --context "AGENTS.md#qa-agent" --scope src/parser/ --task "TASKS.md#Q-001"
-
-# Example: trigger Step 1 review
-claude-code --agent review-arch --context "REVIEW.md#step-1" --target "dev/parse/operator-registry"
-```
-
-Agents read their section of `AGENTS.md` as their system prompt injection. They do not operate outside their defined scope.
+1. **Vector-native only.** Rasterization is used solely for cross-modal context.
+2. **Knowledge Graph is deterministic.** Product matching must be exact KG lookups, never probabilistic guessing.
+3. **DRL must respect KG constraints.** The RL agent can only place components that the KG confirms are valid.
+4. **IFC compliance is non-negotiable.** Output must import into Revit 2024+ and ArchiCAD 27+.
+5. **Test before merge.** All code passes QA + both review stages.
+6. **Interfaces before implementation.**

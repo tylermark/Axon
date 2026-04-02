@@ -1,0 +1,35 @@
+# Axon ruff configuration
+# Matches conventions in claude.md: Python 3.11+, Google-style docstrings,
+# no wildcard imports, explicit is better.
+
+target-version = "py311"
+line-length = 100
+
+[lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "TCH",  # flake8-type-checking
+    "RUF",  # ruff-specific rules
+]
+ignore = [
+    "E501",   # line length handled by formatter
+    "SIM108", # allow ternary vs if/else per readability
+]
+
+[lint.isort]
+known-first-party = ["src"]
+
+[lint.pydocstyle]
+convention = "google"
+
+[format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true

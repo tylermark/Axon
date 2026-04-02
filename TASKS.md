@@ -1,226 +1,265 @@
 # TASKS.md — Axon Task Breakdown & Dependency Graph
 
-## Task ID Convention
-
-```
-[Agent Prefix]-[Sequential Number]
-```
+## Task ID Prefixes
 
 | Prefix | Agent |
 |--------|-------|
+| I | Integration |
 | P | Parser |
 | T | Tokenizer |
 | D | Diffusion |
 | C | Constraint |
-| H | Topology (Homology) |
-| F | Physics (FEA) |
-| S | Serializer |
+| KG | Knowledge Graph |
+| CL | Classifier |
+| DRL | DRL (Panelization + Placement) |
+| FS | Feasibility |
+| BM | BOM |
+| BT | BIM Transplant |
 | TR | Training |
-| I | Integration |
 | Q | QA |
 
 ---
 
-## Phase 0: Foundations
+## Phase 0: Foundations — ✅ DONE
 
-> Interface contracts and project scaffolding. Must complete before any implementation.
-
-| ID | Agent | Task | Depends On | Status |
-|----|-------|------|------------|--------|
-| I-001 | integrate | Create project scaffolding (directory structure, pyproject.toml, ruff config) | — | TODO |
-| I-002 | integrate | Define `RawGraph` interface contract (`docs/interfaces/parser_to_tokenizer.py`) | — | TODO |
-| I-003 | integrate | Define `EnrichedTokenSequence` interface contract (`docs/interfaces/tokenizer_to_diffusion.py`) | — | TODO |
-| I-004 | integrate | Define `RefinedStructuralGraph` interface contract (`docs/interfaces/diffusion_output.py`) | — | TODO |
-| I-005 | integrate | Define `ConstraintGradients` interface contract (`docs/interfaces/constraint_signals.py`) | — | TODO |
-| I-006 | integrate | Define `TopologyLoss` interface contract (`docs/interfaces/topology_loss.py`) | — | TODO |
-| I-007 | integrate | Define `PhysicsLoss` interface contract (`docs/interfaces/physics_loss.py`) | — | TODO |
-| I-008 | integrate | Define `FinalizedGraph` interface contract (`docs/interfaces/graph_to_serializer.py`) | — | TODO |
-| I-009 | integrate | Define global `Config` schema (`src/pipeline/config.py`) | — | TODO |
+| ID | Agent | Task | Status |
+|----|-------|------|--------|
+| I-001 | integrate | Create project scaffolding | ✅ DONE |
+| I-002 | integrate | Define RawGraph interface contract | ✅ DONE |
+| I-003 | integrate | Define EnrichedTokenSequence interface contract | ✅ DONE |
+| I-004 | integrate | Define RefinedStructuralGraph interface contract | ✅ DONE |
+| I-005 | integrate | Define ConstraintSignals interface contract | ✅ DONE |
+| I-006 | integrate | Define global Config schema | ✅ DONE |
 
 ---
 
-## Phase 1: Parser
+## Phase 1: Parser — ✅ DONE
 
-> PDF vector extraction — the foundation of the entire pipeline.
-
-| ID | Agent | Task | Depends On | Status |
-|----|-------|------|------------|--------|
-| P-001 | parse | Implement PostScript operator registry (`operators.py`) | I-001 | TODO |
-| P-002 | parse | Implement PyMuPDF content stream extractor (`extractor.py`) | P-001 | TODO |
-| P-003 | parse | Implement graphics state stack tracking (CTM, stroke, fill, clip) | P-002 | TODO |
-| P-004 | parse | Implement Bézier curve → polyline sampling with metadata preservation | P-002 | TODO |
-| P-005 | parse | Implement KD-tree vertex deduplication within tolerance | P-002 | TODO |
-| P-006 | parse | Implement raw graph G₀ builder (`graph_builder.py`) | P-003, P-004, P-005 | TODO |
-| P-007 | parse | Implement decorative element flagging heuristics (`filters.py`) | P-006 | TODO |
-| P-008 | parse | Validate against ARCH E test sheet (~50K paths, <2s target) | P-006 | TODO |
-| Q-001 | qa | Write unit tests for parser module | P-007 | TODO |
-| Q-002 | qa | Write integration test: PDF → RawGraph end-to-end | P-007, I-002 | TODO |
+| ID | Agent | Task | Status |
+|----|-------|------|--------|
+| P-001 | parse | PostScript operator registry | ✅ DONE |
+| P-002 | parse | PyMuPDF content stream extractor | ✅ DONE |
+| P-003 | parse | Graphics state stack tracking (CTM, stroke, fill) | ✅ DONE |
+| P-004 | parse | Bézier curve → polyline sampling | ✅ DONE |
+| P-005 | parse | KD-tree vertex deduplication | ✅ DONE |
+| P-006 | parse | Raw graph G₀ builder | ✅ DONE |
+| P-007 | parse | Decorative element flagging | ✅ DONE |
+| P-008 | parse | Performance validation (<2s on ARCH E sheet) | ✅ DONE |
+| Q-001 | qa | Unit tests for parser module | ✅ DONE |
+| Q-002 | qa | Integration test: PDF → RawGraph | ✅ DONE |
 
 ---
 
-## Phase 2: Tokenizer
+## Phase 2: Tokenizer — ✅ DONE
 
-> Cross-modal feature alignment. Can begin once Parser interface is stable.
-
-| ID | Agent | Task | Depends On | Status |
-|----|-------|------|------------|--------|
-| T-001 | token | Implement vector token embedding layer | I-002, I-003 | TODO |
-| T-002 | token | Implement 2D learned positional encoding | T-001 | TODO |
-| T-003 | token | Integrate HRNet/Swin backbone via timm for raster features | I-001 | TODO |
-| T-004 | token | Implement vision-to-vector cross-attention module | T-001, T-003 | TODO |
-| T-005 | token | Implement vector-to-vision cross-attention module | T-001, T-003 | TODO |
-| T-006 | token | Implement TEF fusion combining both attention directions | T-004, T-005 | TODO |
-| T-007 | token | Implement spatial attention windowing (bounded radius) | T-006 | TODO |
-| T-008 | token | Implement vector-only fallback mode (no raster available) | T-006 | TODO |
-| Q-003 | qa | Write unit tests for tokenizer module | T-008 | TODO |
-| Q-004 | qa | Write integration test: RawGraph → EnrichedTokenSequence | T-008, Q-002 | TODO |
-
----
-
-## Phase 3: Diffusion Engine
-
-> Core generative model. Can begin once Tokenizer interface is defined.
+> Cross-modal feature alignment. The bridge between raw geometry and semantic understanding.
 
 | ID | Agent | Task | Depends On | Status |
 |----|-------|------|------------|--------|
-| D-001 | diffuse | Implement cosine noise schedule | I-003, I-004 | TODO |
-| D-002 | diffuse | Implement forward diffusion (continuous coordinates + discrete adjacency) | D-001 | TODO |
-| D-003 | diffuse | Implement HDSE — shortest-path distance encoding | D-001 | TODO |
-| D-004 | diffuse | Implement HDSE — random walk similarity encoding | D-003 | TODO |
-| D-005 | diffuse | Implement HDSE — hierarchical level encoding | D-004 | TODO |
-| D-006 | diffuse | Implement linear transformer backbone with HDSE attention bias | D-005 | TODO |
-| D-007 | diffuse | Implement reverse denoising conditioned on context c | D-006 | TODO |
-| D-008 | diffuse | Implement DDIM sampling for fast inference (50 steps) | D-007 | TODO |
-| D-009 | diffuse | Implement variational lower bound loss computation | D-007 | TODO |
-| Q-005 | qa | Write unit tests for diffusion module | D-009 | TODO |
-| Q-006 | qa | Write integration test: EnrichedTokenSequence → RefinedStructuralGraph | D-009, Q-004 | TODO |
+| T-001 | token | Vector token embedding layer | I-003 | ✅ DONE |
+| T-002 | token | 2D learned positional encoding | T-001 | ✅ DONE |
+| T-003 | token | Integrate HRNet/Swin backbone via timm | I-001 | ✅ DONE |
+| T-004 | token | Vision-to-vector cross-attention module | T-001, T-003 | ✅ DONE |
+| T-005 | token | Vector-to-vision cross-attention module | T-001, T-003 | ✅ DONE |
+| T-006 | token | TEF fusion combining both attention directions | T-004, T-005 | ✅ DONE |
+| T-007 | token | Spatial attention windowing (bounded radius) | T-006 | ✅ DONE |
+| T-008 | token | Vector-only fallback mode | T-006 | ✅ DONE |
+| Q-003 | qa | Unit tests for tokenizer module | T-008 | ✅ DONE |
+| Q-004 | qa | Integration test: RawGraph → EnrichedTokenSequence | T-008 | ✅ DONE |
 
 ---
 
-## Phase 4: Constraints & Topology
-
-> Can proceed in parallel once Diffusion output interface is defined.
+## Phase 3: Diffusion Engine — ✅ DONE
 
 | ID | Agent | Task | Depends On | Status |
 |----|-------|------|------------|--------|
-| C-001 | constrain | Implement orthogonal integrity axiom (cosine similarity penalty) | I-004, I-005 | TODO |
-| C-002 | constrain | Implement parallel pair constancy axiom (IQR-bounded distance) | C-001 | TODO |
-| C-003 | constrain | Implement junction closure axiom (Graph Laplacian penalty) | C-001 | TODO |
-| C-004 | constrain | Implement spatial non-intersection axiom | C-001 | TODO |
-| C-005 | constrain | Implement differentiable SAT solver (convex decomposition) | C-001 | TODO |
-| C-006 | constrain | Implement axiom weight meta-learning | C-005 | TODO |
-| C-007 | constrain | Implement hard projection / snapping for inference | C-005 | TODO |
-| C-008 | constrain | Build configurable axiom registry | C-001 thru C-004 | TODO |
-| H-001 | topo | Implement cubical complex construction from graph | I-004, I-006 | TODO |
-| H-002 | topo | Implement persistence diagram computation (Betti-0, Betti-1) | H-001 | TODO |
-| H-003 | topo | Implement Sinkhorn-Knopp optimal transport | H-002 | TODO |
-| H-004 | topo | Implement Wasserstein distance computation | H-003 | TODO |
-| H-005 | topo | Implement Topology-Aware Focal Loss (TAFL) | H-004 | TODO |
-| Q-007 | qa | Write unit tests for constraint module | C-008 | TODO |
-| Q-008 | qa | Write unit tests for topology module | H-005 | TODO |
+| D-001 | diffuse | Cosine noise schedule | I-004 | ✅ DONE |
+| D-002 | diffuse | Forward diffusion (continuous coords + discrete adjacency) | D-001 | ✅ DONE |
+| D-003 | diffuse | HDSE — shortest-path + random walk + hierarchical encoding | D-001 | ✅ DONE |
+| D-004 | diffuse | Linear transformer backbone with HDSE attention bias | D-003 | ✅ DONE |
+| D-005 | diffuse | Reverse denoising conditioned on context | D-004 | ✅ DONE |
+| D-006 | diffuse | DDIM sampling for fast inference (50 steps) | D-005 | ✅ DONE |
+| D-007 | diffuse | Variational lower bound loss | D-005 | ✅ DONE |
+| Q-005 | qa | Unit tests for diffusion module | D-007 | ✅ DONE |
+| Q-006 | qa | Integration test: EnrichedTokenSequence → RefinedStructuralGraph | D-007 | ✅ DONE |
 
 ---
 
-## Phase 5: Physics Layer
-
-> Depends on Constraint module for wall thickness data.
+## Phase 4: Constraints — ✅ DONE
 
 | ID | Agent | Task | Depends On | Status |
 |----|-------|------|------------|--------|
-| F-001 | physics | Implement wall → MITC4 shell element discretization | I-004, I-007 | TODO |
-| F-002 | physics | Implement wall → Euler-Bernoulli beam-column element discretization | F-001 | TODO |
-| F-003 | physics | Implement load application (dead + live loads) | F-002 | TODO |
-| F-004 | physics | Implement PE-PINN with sinusoidal activations | F-001 | TODO |
-| F-005 | physics | Integrate JAX-SSO solver | F-003 | TODO |
-| F-006 | physics | Implement adjoint method for gradient computation | F-005 | TODO |
-| F-007 | physics | Implement physics loss (displacement MSE + stress constraint) | F-006 | TODO |
-| F-008 | physics | Implement structural viability report output | F-007 | TODO |
-| Q-009 | qa | Write unit tests for physics module | F-008 | TODO |
+| C-001 | constrain | Orthogonal integrity axiom (cosine penalty) | I-005 | ✅ DONE |
+| C-002 | constrain | Parallel pair constancy axiom (IQR distance) | C-001 | ✅ DONE |
+| C-003 | constrain | Junction closure axiom (Graph Laplacian) | C-001 | ✅ DONE |
+| C-004 | constrain | Spatial non-intersection axiom | C-001 | ✅ DONE |
+| C-005 | constrain | Differentiable SAT solver (convex decomposition) | C-001 | ✅ DONE |
+| C-006 | constrain | Lightweight Betti number regularization for room enclosure | C-005 | ✅ DONE |
+| C-007 | constrain | Hard projection / snapping for inference | C-005 | ✅ DONE |
+| C-008 | constrain | Configurable axiom registry | C-001 thru C-004 | ✅ DONE |
+| Q-007 | qa | Unit tests for constraint module | C-008 | ✅ DONE |
 
 ---
 
-## Phase 6: Serializer
+## Phase 5: Layer 1 Integration — ✅ DONE
 
-> Can begin interface design early; implementation needs finalized graph.
+> Wire extraction pipeline end-to-end. Must pass before Layer 2 begins.
 
 | ID | Agent | Task | Depends On | Status |
 |----|-------|------|------------|--------|
-| S-001 | serial | Define compressed JSON vocabulary | I-008 | TODO |
-| S-002 | serial | Implement graph → JSON tokenization (structure-first hierarchy) | S-001 | TODO |
-| S-003 | serial | Implement IfcWallStandardCase mapping | S-002 | TODO |
-| S-004 | serial | Implement SweptSolid shape representation from graph geometry | S-003 | TODO |
-| S-005 | serial | Implement opening attachment (IfcRelVoidsElement) | S-004 | TODO |
-| S-006 | serial | Implement room semantics (IfcSpace, IfcRelSpaceBoundary) | S-005 | TODO |
-| S-007 | serial | Implement IFC-SPF export via IfcOpenShell | S-006 | TODO |
-| S-008 | serial | Implement JSON export | S-002 | TODO |
-| S-009 | serial | Validate Revit 2024+ import | S-007 | TODO |
-| S-010 | serial | Validate ArchiCAD 27+ import | S-007 | TODO |
-| Q-010 | qa | Write unit tests for serializer module | S-008 | TODO |
-| Q-011 | qa | Write IFC round-trip integration test | S-007 | TODO |
+| I-007 | integrate | Wire Layer 1 pipeline (parser → tokenizer → diffusion → constraints) | All L1 phases | ✅ DONE |
+| I-008 | integrate | Implement CLI for single-PDF extraction | I-007 | ✅ DONE |
+| Q-008 | qa | HIoU benchmark | I-007 | ✅ DONE |
+| Q-009 | qa | Graph Edit Distance benchmark | I-007 | ✅ DONE |
+| Q-010 | qa | Betti Number Error benchmark | I-007 | ✅ DONE |
+| Q-011 | qa | End-to-end test: PDF → clean structural graph | I-007 | ✅ DONE |
 
 ---
 
-## Phase 7: Training Pipeline
+## Phase 6: Knowledge Graph — ✅ DONE
 
-> Can begin once all model components exist.
+> Foundation for all Layer 2 work. No ML — pure data modeling.
 
 | ID | Agent | Task | Depends On | Status |
 |----|-------|------|------------|--------|
-| TR-001 | train | Implement Masked Primitive Modeling (MPM) pre-training loop | T-008, D-009 | TODO |
-| TR-002 | train | Implement unlabeled PDF data engine | P-007 | TODO |
-| TR-003 | train | Implement Chamfer Distance + coordinate regression loss | TR-001 | TODO |
-| TR-004 | train | Implement SFT training loop with L_total | All Phase 3-5 | TODO |
-| TR-005 | train | Implement GRPO quality annealing | TR-004 | TODO |
-| TR-006 | train | Implement curriculum loss scheduling | TR-004 | TODO |
-| TR-007 | train | Implement W&B integration and checkpointing | TR-004 | TODO |
-| TR-008 | train | Write training scripts (pretrain.sh, finetune.sh) | TR-007 | TODO |
+| KG-001 | catalog | Define KG schema (panel, pod, machine, connection, compliance node types) | I-001 | ✅ DONE |
+| KG-002 | catalog | Implement KG loader (JSON → graph) | KG-001 | ✅ DONE |
+| KG-003 | catalog | Populate panels.json with Capsule's CFS panel catalog | KG-001 | ✅ DONE |
+| KG-004 | catalog | Populate pods.json with Capsule's pod assemblies | KG-001 | ✅ DONE |
+| KG-005 | catalog | Populate machines.json (Howick 2.5, 3.5, Zund specs) | KG-001 | ✅ DONE |
+| KG-006 | catalog | Populate connections.json (splices, clips, fasteners) | KG-001 | ✅ DONE |
+| KG-007 | catalog | Implement query API ("given wall dims + type → valid panels") | KG-002 | ✅ DONE |
+| KG-008 | catalog | Implement query API ("given room dims + function → valid pods") | KG-002 | ✅ DONE |
+| KG-009 | catalog | Implement fabrication constraint validation | KG-007 | ✅ DONE |
+| Q-012 | qa | Unit tests for KG module | KG-009 | ✅ DONE |
 
 ---
 
-## Phase 8: Integration & Benchmarking
-
-> Final assembly and evaluation.
+## Phase 7: Wall Classification — ✅ DONE
 
 | ID | Agent | Task | Depends On | Status |
 |----|-------|------|------------|--------|
-| I-010 | integrate | Wire full inference pipeline (runner.py) | All phases | TODO |
-| I-011 | integrate | Implement CLI interface | I-010 | TODO |
-| I-012 | integrate | Implement batch processing mode | I-011 | TODO |
-| Q-012 | qa | Implement HIoU benchmark | I-010 | TODO |
-| Q-013 | qa | Implement Graph Edit Distance benchmark | I-010 | TODO |
-| Q-014 | qa | Implement Betti Number Error benchmark | I-010 | TODO |
-| Q-015 | qa | Implement PINN Stress/Load Variance benchmark | I-010 | TODO |
-| Q-016 | qa | Implement LayoutGKN / SSIG benchmark | I-010 | TODO |
-| Q-017 | qa | Run full evaluation on CubiCasa5K test set | Q-012 thru Q-016 | TODO |
-| Q-018 | qa | Run full evaluation on MSD test set | Q-012 thru Q-016 | TODO |
+| CL-001 | classify | Define wall type taxonomy | I-007 | ✅ DONE |
+| CL-002 | classify | Thickness-based classification rules | CL-001 | ✅ DONE |
+| CL-003 | classify | Context-based classification (adjacency, labels, hatching) | CL-002 | ✅ DONE |
+| CL-004 | classify | Fire rating detection (fill color, annotations) | CL-003 | ✅ DONE |
+| CL-005 | classify | Confidence scoring and human-review flagging | CL-004 | ✅ DONE |
+| Q-013 | qa | Unit tests for classifier | CL-005 | ✅ DONE |
 
 ---
 
-## Dependency Graph (Simplified)
+## Phase 8: DRL Panelization & Placement — ✅ DONE
+
+> The core Layer 2 intelligence. Requires KG + classified walls.
+
+| ID | Agent | Task | Depends On | Status |
+|----|-------|------|------------|--------|
+| DRL-001 | drl | Define floor plan environment (state space, observation) | CL-005, KG-009 | ✅ DONE |
+| DRL-002 | drl | Define action space for wall panelization | DRL-001 | ✅ DONE |
+| DRL-003 | drl | Define action space for product placement | DRL-001 | ✅ DONE |
+| DRL-004 | drl | Implement reward function (SPUR, waste, violations) | DRL-002, DRL-003 | ✅ DONE |
+| DRL-005 | drl | Implement panelization episode loop (wall → panel segments) | DRL-004 | ✅ DONE |
+| DRL-006 | drl | Implement placement episode loop (rooms → pods/products) | DRL-004 | ✅ DONE |
+| DRL-007 | drl | Implement opening constraint handling (doors/windows) | DRL-005 | ✅ DONE |
+| DRL-008 | drl | Implement joint/angle constraint handling | DRL-005 | ✅ DONE |
+| DRL-009 | drl | Train DRL policy on simulated floor plans | DRL-007, DRL-008 | ✅ DONE |
+| Q-014 | qa | Unit tests for DRL environment and reward | DRL-004 | ✅ DONE |
+| Q-015 | qa | SPUR benchmark on test set | DRL-009 | ✅ DONE |
+| Q-016 | qa | DRL reward convergence test | DRL-009 | ✅ DONE |
+
+---
+
+## Phase 9: Feasibility & BOM — ✅ DONE
+
+| ID | Agent | Task | Depends On | Status |
+|----|-------|------|------------|--------|
+| FS-001 | feasibility | Prefab percentage calculation (by wall length, area, cost) | DRL-009 | ✅ DONE |
+| FS-002 | feasibility | Blocker identification and categorization | FS-001 | ✅ DONE |
+| FS-003 | feasibility | Design modification suggestions | FS-002 | ✅ DONE |
+| FS-004 | feasibility | Feasibility report generation | FS-003 | ✅ DONE |
+| BM-001 | bom | CFS quantity takeoff (studs, track, fasteners, sheathing) | DRL-009 | ✅ DONE |
+| BM-002 | bom | Pod component takeoff | DRL-009 | ✅ DONE |
+| BM-003 | bom | Cost estimation from unit pricing | BM-001, BM-002 | ✅ DONE |
+| BM-004 | bom | Labor hour estimation | BM-003 | ✅ DONE |
+| BM-005 | bom | BOM export (CSV, Excel, PDF) | BM-004 | ✅ DONE |
+| Q-017 | qa | Unit tests for feasibility module | FS-004 | ✅ DONE |
+| Q-018 | qa | Unit tests for BOM module | BM-005 | ✅ DONE |
+
+---
+
+## Phase 10: BIM Transplant & IFC Export — ✅ DONE
+
+| ID | Agent | Task | Depends On | Status |
+|----|-------|------|------------|--------|
+| BT-001 | transplant | Implement KG → BIM family matching (panel type → Revit family) | DRL-009, KG-007 | ✅ DONE |
+| BT-002 | transplant | Implement 3D model assembly from placed panels | BT-001 | ✅ DONE |
+| BT-003 | transplant | Implement opening attachment (IfcRelVoidsElement) | BT-002 | ✅ DONE |
+| BT-004 | transplant | Implement IFC serialization (ISO 16739-1:2024) | BT-003 | ✅ DONE |
+| BT-005 | transplant | Validate Revit 2024+ import | BT-004 | MANUAL |
+| BT-006 | transplant | Validate ArchiCAD 27+ import | BT-004 | MANUAL |
+| Q-019 | qa | IFC round-trip integration test | BT-004 | ✅ DONE |
+
+---
+
+## Phase 11: Training Pipeline — ✅ DONE
+
+| ID | Agent | Task | Depends On | Status |
+|----|-------|------|------------|--------|
+| TR-001 | train | Masked Primitive Modeling (MPM) pre-training loop | T-008, D-007 | ✅ DONE |
+| TR-002 | train | Unlabeled PDF data engine | P-008 | ✅ DONE |
+| TR-003 | train | SFT training loop with L_total | All L1 | ✅ DONE |
+| TR-004 | train | GRPO quality annealing | TR-003 | ✅ DONE |
+| TR-005 | train | DRL training pipeline (simulated episodes) | DRL-004 | ✅ DONE |
+| TR-006 | train | W&B integration and checkpointing | TR-003 | ✅ DONE |
+| TR-007 | train | Training scripts | TR-006 | ✅ DONE |
+
+---
+
+## Phase 12: Full Pipeline Integration — ✅ DONE
+
+| ID | Agent | Task | Depends On | Status |
+|----|-------|------|------------|--------|
+| I-009 | integrate | Wire Layer 1 → Layer 2 full pipeline | All phases | ✅ DONE |
+| I-010 | integrate | Implement PDF-to-report CLI command | I-009 | ✅ DONE |
+| I-011 | integrate | Combined output (feasibility + BOM + panel schedule + IFC) | I-010 | ✅ DONE |
+| Q-020 | qa | End-to-end: sample PDF → full prefab report | I-011 | ✅ DONE |
+| Q-021 | qa | Test against real Capsule project PDFs | Q-020 | ✅ DONE |
+
+---
+
+## Dependency Graph
 
 ```
-Phase 0 (Interfaces)
+Phase 0 (Foundations) ✅
     │
-    ├── Phase 1 (Parser)
+    Phase 1 (Parser) ✅
     │       │
-    │       └── Phase 2 (Tokenizer)
+    │       Phase 2 (Tokenizer) ✅
     │               │
-    │               └── Phase 3 (Diffusion)
+    │               Phase 3 (Diffusion) ✅
     │                       │
-    │                       ├── Phase 4a (Constraints) ──┐
-    │                       ├── Phase 4b (Topology) ─────┤
-    │                       │                            │
-    │                       └── Phase 5 (Physics) ───────┤
-    │                                                    │
-    │                       Phase 6 (Serializer) ◄───────┘
+    │                       Phase 4 (Constraints + topo reg) ✅
+    │                       │
+    │                       Phase 5 (Layer 1 Integration) ✅
     │                               │
-    │                       Phase 7 (Training)
+    │   ════════════════════ LAYER 2 ════════════════════
     │                               │
-    └───────────────────── Phase 8 (Integration & Benchmarks)
+    │   Phase 6 (Knowledge Graph) ✅┤
+    │                               │
+    │                       Phase 7 (Wall Classification) ✅
+    │                               │
+    │                       Phase 8 (DRL Panelization & Placement) ✅
+    │                               │
+    │                       ┌───────┴───────┐
+    │               Phase 9a           Phase 9b
+    │             (Feasibility) ✅     (BOM) ✅
+    │                       └───────┬───────┘
+    │                               │
+    │                       Phase 10 (BIM Transplant + IFC) ✅
+    │                               │
+    │                       Phase 11 (Training) ✅
+    │                               │
+    └───────────────────── Phase 12 (Full Pipeline) ✅
 ```
 
-**Parallelization opportunities:**
-- Phases 4a, 4b can run in parallel
-- Phase 6 interface design can start during Phase 3
-- Phase 7 (data engine TR-002) can start during Phase 1
-- QA tasks run continuously as modules complete
+**All phases complete.** Next steps: train models on Colab, validate with real Capsule PDFs.

@@ -2,227 +2,146 @@
 
 ## System Overview
 
-Axon is a **seven-stage inference pipeline** with an offline **three-phase training system**. Every stage operates natively on vector/graph representations. Rasterization exists only as a secondary input channel for semantic context.
+Axon is a **two-layer system**: Layer 1 extracts a clean structural graph from any PDF floor plan. Layer 2 maps that graph to Capsule Manufacturing's real products using a Knowledge Graph and Deep Reinforcement Learning, then outputs a manufacture-ready BIM model.
 
 ---
 
-## Stage 1: PDF Vector Parsing
+## Layer 1: Extraction
 
-**Agent:** `parse`  
-**Module:** `src/parser/`
+### Stage 1: PDF Vector Parsing — ✅ DONE
 
-### Process
-1. Open PDF with PyMuPDF, iterate page content streams
-2. Parse PostScript operators into typed primitives:
-   - `m` (moveto) → path start coordinates
-   - `l` (lineto) → line segment endpoints
-   - `c/v/y` (curveto) → cubic Bézier control points
-   - `h` (closepath) → loop closure edge
-3. Track graphics state stack (`q/Q`) to resolve:
-   - Cumulative CTM (Current Transformation Matrix) per path
-   - Stroke width, dash pattern, color (stroke and fill)
-   - Clipping paths (`W/W*`)
-4. Construct raw graph G₀ = (V₀, E₀):
-   - V₀: all moveto/lineto/curveto endpoints as (x, y) float64
-   - E₀: drawn segments connecting consecutive points within a path
+**Agent:** `parse` | **Module:** `src/parser/`
 
-### Key Design Decisions
-- **Bézier curves are sampled into polylines** at configurable resolution (default: 8 segments per curve) for graph compatibility. Original control points are preserved as edge metadata.
-- **Duplicate vertices are merged** within a configurable tolerance (default: 0.5 PDF units) using a KD-tree spatial index.
-- **Decorative elements are flagged, not removed.** A `confidence_wall` score is assigned based on stroke width, color, and geometric regularity. The Tokenizer makes the final semantic decision.
+Parses PDF PostScript operators (`m`, `l`, `c`, `h`, `q/Q`, `W`) via PyMuPDF. Extracts continuous coordinates, stroke properties, and CTM transforms. Constructs raw graph G₀. Bézier curves sampled to polylines. Vertices deduplicated via KD-tree. Decorative elements flagged (not removed). Validated at <2s on ~50K-path ARCH E sheets.
 
-### Performance Target
-- Parse a 50K-path ARCH E sheet in <2 seconds
+### Stage 2: Cross-Modal Tokenization
 
----
+**Agent:** `token` | **Module:** `src/tokenizer/`
 
-## Stage 2: Cross-Modal Tokenization
+Dual-processes the PDF: vector tokens from parsed graph + raster features from rendered image via HRNet/Swin backbone. Bidirectional cross-attention (TEF) fuses modalities so vector tokens absorb semantic context (e.g., "Load Bearing" labels, hatching patterns). Spatial attention is windowed to prevent blowup on large sheets. Vector-only fallback if raster unavailable.
 
-**Agent:** `token`  
-**Module:** `src/tokenizer/`
+### Stage 3: Graph Diffusion Engine
 
-### Process
-1. **Vector tokenization:** Convert each path segment into a token embedding:
-   - Token = [operator_type, x₁, y₁, x₂, y₂, stroke_width, dash_hash, color_rgb, ctm_flat]
-   - Positional encoding: learned 2D positional embedding based on normalized page coordinates
-2. **Raster feature extraction:** Render PDF page to image (300 DPI), pass through HRNet/Swin backbone to produce multi-scale feature maps at 1/4, 1/8, 1/16, 1/32 resolution
-3. **Cross-attention fusion (TEF):**
-   - Vision→Vector: `Attn(Q=vector_tokens, K=visual_features, V=visual_features)`
-   - Vector→Vision: `Attn(Q=visual_features, K=vector_tokens, V=vector_tokens)`
-   - Both use multi-head attention with `d_model=256`, `n_heads=8`
-4. Output: enriched token sequence where each vector token carries local semantic context (adjacent text labels, hatching textures, symbol proximity)
+**Agent:** `diffuse` | **Module:** `src/diffusion/`
 
-### Key Design Decisions
-- **Raster is auxiliary, not primary.** If rasterization fails or isn't available, the pipeline continues with vector-only tokens (degraded but functional).
-- **Attention window is spatially bounded.** Each vector token only attends to visual features within a radius proportional to the page diagonal / 20. This prevents global attention blowup on large sheets.
+DDPM adapted for joint continuous-discrete graphs. Forward: Gaussian noise into node coordinates, categorical noise into adjacency. Reverse: iterative denoising conditioned on cross-modal context. HDSE biases attention toward graph hierarchy (wall → room → floor → building). Cosine noise schedule. DDIM sampling at 50 steps for inference.
+
+### Stage 4: Geometric Constraints
+
+**Agent:** `constrain` | **Module:** `src/constraints/`
+
+Differentiable SAT solver enforces four axioms at each denoising step: orthogonal integrity, parallel pair constancy, junction closure, spatial non-intersection. Gradient projection snaps geometry into compliance. Lightweight Betti number regularization ensures room enclosure during training.
+
+**Composite loss:**
+$$\mathcal{L}_{total} = \mathcal{L}_{diffusion} + \lambda_{SAT}\,\mathcal{L}_{constraints}$$
+
+Soft constraints during training, hard snap during inference.
 
 ---
 
-## Stage 3: Graph Diffusion Engine
+## Layer 2: Prefab Intelligence
 
-**Agent:** `diffuse`  
-**Module:** `src/diffusion/`
+### Stage 5: Knowledge Graph
 
-### Process
-1. **Forward diffusion (training only):**
-   - Inject Gaussian noise into node coordinate matrix X over T timesteps
-   - Inject categorical noise into adjacency matrix A (edge flip probability)
-   - Schedule: cosine schedule (Nichol & Dhariwal)
-2. **Reverse denoising (inference):**
-   - Start from noise, conditioned on cross-modal context c from Tokenizer
-   - At each step t, neural network predicts ε (noise) for coordinates and edge logits
-   - HDSE biases attention: nearby nodes attend strongly, distant nodes attend weakly, with hierarchical levels (wall → room → floor → building)
-3. **Output:** Predicted structural graph G* with wall junction nodes and wall segment edges
+**Agent:** `catalog` | **Module:** `src/knowledge_graph/`
 
-### Architecture
-- Backbone: Linear Transformer with HDSE-augmented attention scores
-- Layers: 12 transformer blocks, d_model=512, n_heads=8
-- Timestep embedding: sinusoidal, concatenated with context
-- T=1000 steps (training), DDIM sampling with 50 steps (inference)
+Structured, deterministic database of Capsule's entire product world. Node types: Panel, Pod, Machine, Connection, Material, Compliance. Relationship types: FABRICATED_BY, COMPATIBLE_WITH, REQUIRES, RATED_FOR.
 
-### Key Design Decisions
-- **Joint continuous-discrete diffusion.** Coordinates use Gaussian noise; adjacency uses absorbing-state discrete diffusion. These are coupled through shared attention.
-- **HDSE replaces standard positional encoding** in the graph transformer. It encodes shortest-path distance, random walk similarity, and hierarchical level simultaneously.
+All Layer 2 agents query the KG — it is the single source of truth. No probabilistic guessing. If the KG says a panel doesn't exist in that gauge/length/fire-rating combination, it doesn't get placed.
 
----
+Key queries:
+- `get_valid_panels(wall_length, type, fire_rating)` → compatible panels with fabrication details
+- `get_valid_pods(room_dims, function)` → compatible pod assemblies
+- `get_bim_family(panel_spec)` → exact Revit/ArchiCAD family match
 
-## Stage 4: Differentiable Constraint Enforcement
+### Stage 6: Wall Classification
 
-**Agent:** `constrain`  
-**Module:** `src/constraints/`
+**Agent:** `classify` | **Module:** `src/classifier/`
 
-### Process
-At each reverse diffusion step t:
-1. Extract predicted wall junctions and edges from denoiser output
-2. Evaluate all axioms against current geometry:
-   - **Orthogonal Integrity:** L_ortho = Σ (1 - |cos(θ_e1, θ_e2)|²) for expected-parallel or expected-perpendicular edge pairs
-   - **Parallel Pair Constancy:** L_parallel = Σ max(0, |d(e1,e2) - μ_thickness| - IQR/2) for paired wall edges
-   - **Junction Closure:** L_junction = λ_junction · ||L · x||² where L is graph Laplacian, penalizing nodes with degree < 2
-   - **Spatial Non-Intersection:** L_intersect = Σ ReLU(overlap_area(e_i, e_j)) for non-adjacent edge pairs
-3. Compute total constraint loss: L_SAT = w₁·L_ortho + w₂·L_parallel + w₃·L_junction + w₄·L_intersect
-4. Backpropagate gradients through differentiable SAT
-5. Project geometry: snap near-orthogonal angles to exact 90° when within tolerance
+Labels every wall edge: load-bearing, partition, shear, fire-rated, envelope. Uses thickness, adjacency, text annotations, fill colors from Layer 1 extraction. Confidence scoring flags ambiguous walls for human review.
 
-### Key Design Decisions
-- **Soft constraints during training, hard snap during inference.** Training uses smooth penalties; inference applies hard projection after final denoising step.
-- **Axiom weights are learned** (via meta-learning on validation set), not hand-tuned.
+### Stage 7: DRL Panelization & Placement
 
----
+**Agent:** `drl` | **Module:** `src/drl/`
 
-## Stage 5: Topological Integrity
+The core optimization engine. A Deep Reinforcement Learning agent operates in a floor plan environment:
 
-**Agent:** `topo`  
-**Module:** `src/topology/`
+**State:** Classified wall graph + room geometries + current assignments  
+**Actions:** Panel cut-point selection, panel type assignment, pod placement position/orientation  
+**Reward:** SPUR (standard part usage), waste minimization, catalog match rate  
+**Penalties:** Overlaps, gaps, opening obstructions, code violations
 
-### Process
-1. Construct cubical complex from predicted graph (rasterize to binary grid, then build filtration)
-2. Compute persistence diagram PD_pred tracking Betti-0 (components) and Betti-1 (holes)
-3. Compute ground-truth persistence diagram PD_gt
-4. Calculate Wasserstein-1 distance using Sinkhorn-Knopp:
-   - W₁(PD_pred, PD_gt) via entropy-regularized optimal transport
-5. Topology-Aware Focal Loss:
-   - TAFL = α · W₁ + β · |Betti₀_pred - Betti₀_gt| + γ · |Betti₁_pred - Betti₁_gt|
+Two sub-tasks run sequentially:
+1. **Panelization** — divide each wall into discrete CFS panels from the KG catalog
+2. **Placement** — populate eligible rooms with pod assemblies from the KG catalog
 
-### Key Design Decisions
-- **Cubical complex (not simplicial)** for computational efficiency on grid-aligned filtrations
-- **Sinkhorn (not Hungarian)** for differentiability — Hungarian matching has no gradient
-- **Betti number counts as auxiliary loss** alongside Wasserstein for direct topological feature count supervision
+The DRL agent can ONLY place components validated by the KG. This is a hard constraint, not a soft penalty.
 
----
+Training: thousands of episodes per floor plan on simulated graphs extracted by Layer 1.
 
-## Stage 6: Physics Validation
+### Stage 8: Feasibility & BOM
 
-**Agent:** `physics`  
-**Module:** `src/physics/`
+**Agents:** `feasibility` + `bom` | **Modules:** `src/feasibility/`, `src/bom/`
 
-### Process
-1. Discretize wall graph into FEA mesh:
-   - Walls → MITC4 quadrilateral shell elements (2D plane stress)
-   - Slender walls → 1D Euler-Bernoulli beam-column elements
-2. Apply loads:
-   - Dead load: self-weight based on assumed material density and wall thickness
-   - Live load: uniform distributed load per code (e.g., 40 psf residential)
-3. Solve equilibrium via JAX-SSO:
-   - K·u = F (stiffness × displacement = force)
-   - Extract: max displacement, max shear stress, max bearing pressure
-4. Compute physics loss:
-   - L_PDE = MSE(u_predicted, u_reference) + λ · max(0, σ_max - σ_allowable)
-5. Backpropagate via adjoint method
+Feasibility: prefab coverage % (by wall length, area, cost), blocker identification, design modification suggestions ("straighten this wall for +12 panels").
 
-### Key Design Decisions
-- **PE-PINN with sin activations** (not ReLU) to resolve high-frequency spatial derivatives in PDE solutions
-- **Adjoint method** (not direct backprop through solve) for memory efficiency on large meshes
-- **Physics loss is weighted lower early in training** (curriculum: visual → geometric → topological → physical)
+BOM: quantity takeoff (studs, track, fasteners, sheathing, pod components), cost estimation from KG pricing, labor hours from production rates. Export to CSV, Excel, PDF.
 
----
+### Stage 9: BIM Library Transplant & IFC Export
 
-## Stage 7: IFC Serialization
+**Agent:** `transplant` | **Module:** `src/transplant/`
 
-**Agent:** `serial`  
-**Module:** `src/serializer/`
-
-### Process
-1. Tokenize finalized graph into compressed JSON vocabulary:
-   - Structure hierarchy: vertices → wall segments → openings → rooms → floor
-2. Map each wall to `IfcWallStandardCase`:
-   - Extrusion axis from graph edge direction
-   - Cross-section from parallel pair thickness
-   - SweptSolid shape representation
-3. Attach openings: `IfcRelVoidsElement`, `IfcOpeningElement`
-4. Assign room semantics: `IfcSpace` with `IfcRelSpaceBoundary`
-5. Export via IfcOpenShell to IFC-SPF format
-
----
-
-## Composite Loss Function
-
-The full training objective combines all differentiable losses:
-
-```
-L_total = L_diffusion                           (data likelihood)
-        + λ₁ · L_SAT                            (geometric constraints)
-        + λ₂ · TAFL                             (topological integrity)
-        + λ₃ · L_PDE                            (physics viability)
-        + λ₄ · L_reconstruction                 (pre-training / MPM)
-```
-
-Loss weights follow a curriculum schedule:
-- Phase 1 (epochs 1-50): L_diffusion dominant, others warm up linearly
-- Phase 2 (epochs 51-150): All losses active, λ values learned via meta-learning
-- Phase 3 (epochs 151+): L_PDE and TAFL weights increase for fine structural precision
+Each 2D panel slot from the DRL output is matched to its exact 3D BIM family via deterministic KG lookup (panel type + gauge + length + fire rating → Revit family). The 2D skeleton is replaced with high-LOD 3D models including seams, hardware, and SKUs. Openings attached via IfcRelVoidsElement. Output serialized to IFC per ISO 16739-1:2024. Must import clean in Revit 2024+ and ArchiCAD 27+.
 
 ---
 
 ## Training Pipeline
 
+### Datasets
+
+All datasets are local at `datasets/` (relative to repo root).
+
+| Dataset | Count | Format | Training Use |
+|---------|-------|--------|-------------|
+| **archcad400k** | ~41K (4 shards processed of 400K) | Vector entities (LINE/ARC with coords) + PNG + SVG + point clouds + captions (JSON) | MPM pre-training, SFT — vector-native geometry |
+| **FloorPlanCAD** | 15K+ (3 tar.xz archives) | CAD drawings | MPM pre-training — vector-native |
+| **ResPlan** | 17,107 | Shapely polygons (walls, rooms, doors, windows) + room graphs (pickle) | DRL episode generation, graph supervision |
+| **MLSTRUCT-FP** | 935 PNGs | Raster floor plan images | Cross-modal tokenizer raster branch |
+
+**archcad400k** is the primary training dataset. JSON format has `entities` list with typed geometric primitives (`LINE`, `ARC`) containing start/end coordinates — maps directly to Axon's parser output format. Paired PNGs provide raster supervision for the cross-modal tokenizer. Pre-processed shards at `datasets/archcad400k/processed/shard_XXX.pt`.
+
+**ResPlan** provides structured room graphs with typed polygons (wall, bedroom, kitchen, bathroom, etc.) and `wall_depth` — ideal for generating synthetic DRL training episodes with ground-truth room segmentation.
+
 ### Phase A: Self-Supervised Pre-Training (MPM)
-- Data: 100K+ unlabeled PDF floor plans
-- Task: Reconstruct 75-85% masked vector tokens
+- Data: archcad400k (vector entities) + FloorPlanCAD
+- Task: reconstruct 75-85% masked vector tokens
 - Loss: Chamfer Distance + coordinate regression
-- Duration: ~200 epochs on 4×A100
 
 ### Phase B: Supervised Fine-Tuning (SFT)
-- Data: CubiCasa5K, Floorplan-HQ-300K, MSD, ResPlan
-- Task: Full pipeline with ground-truth graphs
-- Loss: L_total (all components)
-- Duration: ~150 epochs on 4×A100
+- Data: archcad400k (vector + raster pairs), MLSTRUCT-FP (raster)
+- Loss: $\mathcal{L}_{total}$ (diffusion + SAT constraints)
 
 ### Phase C: Quality Annealing (GRPO)
-- Data: Curated high-quality subset
-- Task: Group Relative Policy Optimization
-- Reward: composite metric (HIoU + GED + Betti + PINN MSE)
-- Duration: ~50 epochs on 4×A100
+- Reward: composite metric (HIoU + GED + Betti)
+
+### Phase D: DRL Training
+- Environment: ResPlan room graphs + Layer 1 synthetic floor plans
+- Algorithm: PPO (Stable-Baselines3 or CleanRL)
+- Reward: SPUR + waste ratio + violation count
+- Episodes: thousands per floor plan until convergence
 
 ---
 
 ## Evaluation Metrics
 
-| Metric | Target | Module Responsible |
-|--------|--------|-------------------|
-| HIoU (Hierarchical IoU) | >0.92 | QA benchmarks |
-| mAP@50 | >0.90 | QA benchmarks |
-| Graph Edit Distance | <5.0 | QA benchmarks |
-| Betti Number Error | <0.1 | QA benchmarks |
-| PINN Stress MSE | <0.01 | QA benchmarks |
-| Inference time (single page) | <10s on A100 | Integration perf tests |
-| IFC import success rate | 100% (Revit + ArchiCAD) | Serializer validation |
+| Metric | Target | What It Measures |
+|--------|--------|-----------------|
+| HIoU | >0.92 | Wall extraction accuracy |
+| GED | <5.0 | Graph topology accuracy |
+| Betti Error | <0.1 | Room enclosure integrity |
+| SPUR | >0.85 | Standard panel utilization (prefab efficiency) |
+| KG Match | >0.95 | Correct product selection from catalog |
+| BIM Transplant | 100% | IFC import success in Revit + ArchiCAD |
+| DRL Convergence | Stable reward | Optimization quality |
+| Waste Ratio | <5% | Material waste from non-standard cuts |
+| Prefab Coverage | Report | % of building achievable with Capsule products |

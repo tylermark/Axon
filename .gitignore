@@ -42,3 +42,30 @@ data/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Checkpoints & logs
+checkpoints/
+outputs/
+logs/
+
+# uv
+uv.lock
+
+# Coverage
+htmlcov/
+.coverage
+.coverage.*
+
+# mypy
+.mypy_cache/
+
+# ruff
+.ruff_cache/
+
+# IFC/STEP output artifacts
+*.ifc
+*.stp
+*.step
+
+# Test fixtures (tracked selectively)
+tests/fixtures/*.pdf

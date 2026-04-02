@@ -1,0 +1,45 @@
+{
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(git init:*)",
+      "Bash(git branch:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m ':*)",
+      "Bash(git remote:*)",
+      "Bash(git push:*)",
+      "Bash(gh auth:*)",
+      "Bash(chmod +x:*)",
+      "Bash(python3:*)",
+      "Skill(update-config)",
+      "Bash(python -m pytest tests/ -v --tb=short)",
+      "Bash(python -m pytest tests/ -v --tb=short -m \"not slow\")",
+      "Bash(python -m pytest tests/ --tb=short -m \"not slow\" -q)",
+      "Bash(python -m pytest tests/ -q --tb=short -m \"not slow\")",
+      "Bash(python:*)",
+      "Bash(pip install:*)",
+      "Bash(pip list:*)",
+      "WebSearch",
+      "WebFetch(domain:arxiv.org)",
+      "Bash(curl -s \"https://huggingface.co/api/datasets?search=archicad\")",
+      "Bash(curl -s \"https://huggingface.co/api/datasets?search=floor+plan+400k\")",
+      "Bash(curl -s \"https://api.github.com/search/repositories?q=archicad+400k+floor+plan&sort=stars\")",
+      "WebFetch(domain:www.google.com)",
+      "WebFetch(domain:scholar.google.com)",
+      "WebFetch(domain:paperswithcode.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:duckduckgo.com)",
+      "WebFetch(domain:api.semanticscholar.org)",
+      "WebFetch(domain:html.duckduckgo.com)",
+      "WebFetch(domain:hmwang2002.github.io)",
+      "WebFetch(domain:archiai-lab.github.io)",
+      "Bash(curl -s \"https://huggingface.co/api/datasets/jackluoluo/ArchCAD\")",
+      "Bash(file \"/mnt/c/Users/tyler/Axon/datasets/FLOORPLANCAD/\"*)",
+      "Bash(file \"/mnt/c/Users/tyler/Axon/CapsuleFloorPlans/\"*)",
+      "Bash(file \"/mnt/c/Users/tyler/Axon/CapsuleFloorPlans/Floorplans/\"*)",
+      "Bash(ssh:*)"
+    ]
+  }
+}

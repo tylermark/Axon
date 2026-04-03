@@ -182,7 +182,7 @@ class SFTDatasetAdapter(Dataset):
             "color_rgb": torch.zeros(N, 3, dtype=torch.float32),
             "confidence_wall": mask.float(),
             "attention_mask": mask,
-            "raw_coordinates": coords.double(),
+            "raw_coordinates": coords.clone(),
         }
 
 
@@ -236,7 +236,7 @@ class ResPlanSFTAdapter(Dataset):
             "color_rgb": torch.zeros(N, 3, dtype=torch.float32),
             "confidence_wall": node_mask.float(),
             "attention_mask": node_mask,
-            "raw_coordinates": coords.double(),
+            "raw_coordinates": coords.clone(),
         }
 
         return {

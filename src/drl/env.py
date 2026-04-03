@@ -692,9 +692,16 @@ class PanelizationEnv(gym.Env):
             to_inches = self._scale / 25.4 if self._scale != 1.0 else 1.0 / 72.0
 
             if remaining is not None and remaining > 0.0:
+                # Multi-panel continuation — remaining already has corner
+                # deductions baked in from the initial step() computation.
                 eff_length = remaining
             elif sub_segments and self.current_sub_segment_idx < len(sub_segments):
                 eff_length = sub_segments[self.current_sub_segment_idx].length_inches
+                # Apply corner thickness deduction (DRL-008)
+                corner_deduction = get_corner_thickness_deduction(
+                    wall.edge_id, self._junction_map, self._walls, self._scale,
+                )
+                eff_length = max(eff_length - corner_deduction, 0.0)
             else:
                 full_length = wall.length * to_inches
                 opening_width = sum(
@@ -702,15 +709,11 @@ class PanelizationEnv(gym.Env):
                     for o in self._opening_map.get(wall.edge_id, [])
                 )
                 eff_length = max(full_length - opening_width, 0.0)
-
-            # Apply corner thickness deduction (DRL-008)
-            corner_deduction = get_corner_thickness_deduction(
-                wall.edge_id,
-                self._junction_map,
-                self._walls,
-                self._scale,
-            )
-            eff_length = max(eff_length - corner_deduction, 0.0)
+                # Apply corner thickness deduction (DRL-008)
+                corner_deduction = get_corner_thickness_deduction(
+                    wall.edge_id, self._junction_map, self._walls, self._scale,
+                )
+                eff_length = max(eff_length - corner_deduction, 0.0)
 
             self._panel_candidates = get_panel_candidates(
                 self.store,

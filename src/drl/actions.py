@@ -165,9 +165,17 @@ def get_panel_candidates(
         fire_rating_hours=fire_hours,
     )
 
-    # Filter out recommendations that fail fabrication validation
+    # Filter out recommendations that fail fabrication validation or
+    # overshoot the wall length (min-length clamping on short walls)
     valid_recs: list[PanelRecommendation] = []
     for rec in recommendations:
+        # Skip recommendations where panels exceed wall length — this
+        # happens when wall is shorter than panel min_length. The agent
+        # should SKIP these walls rather than place an oversized panel.
+        total_cut = sum(rec.cut_lengths_inches) if rec.cut_lengths_inches else 0.0
+        if total_cut > panelizable_length + 0.5:
+            continue
+
         validation = validate_panel_fabrication(
             store,
             panel_sku=rec.panel.sku,

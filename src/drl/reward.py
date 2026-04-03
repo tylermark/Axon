@@ -20,10 +20,15 @@ The overall reward is a weighted sum:
     R = w_spur * R_spur + w_waste * R_waste + w_violation * R_violation
         + w_coverage * R_coverage
 
+At episode end, a terminal bonus is added:
+
+    R_terminal = w_wall_completion * wall_coverage + w_room_completion * room_coverage
+
 with configurable weights.  Default weights are tuned so that:
 - A perfect standard-panel assignment yields R ~ +1.0
-- A skip action yields R ~ 0.0 (neutral, but reduces final coverage)
-- A violation yields R ~ -1.0 to -5.0 (depending on severity)
+- A wall skip yields R ~ -0.5 (penalized — agent must learn to panelize)
+- A violation yields R ~ -0.5 to -1.5 (depending on severity)
+- Full wall+room coverage yields terminal bonus of +5.0
 """
 
 from __future__ import annotations
@@ -52,17 +57,26 @@ class RewardWeights:
     Attributes:
         spur: Weight for SPUR (standard panel utilization). Default 1.0.
         waste: Weight for waste penalty (negative). Default 0.5.
-        violation: Weight for violation penalty (negative). Default 3.0.
-        coverage: Weight for coverage bonus. Default 0.3.
+        violation: Weight for violation penalty (negative). Default 1.5.
+        coverage: Weight for coverage bonus. Default 1.0.
         completion_bonus: One-time bonus at episode end for full coverage.
             Default 5.0.
+        wall_skip_penalty: Penalty applied when the agent skips a wall
+            instead of panelizing it. Default 0.5.
+        wall_completion_bonus: Terminal bonus scaled by wall coverage.
+            Default 3.0.
+        room_completion_bonus: Terminal bonus scaled by room coverage.
+            Default 2.0.
     """
 
     spur: float = 1.0
     waste: float = 0.5
-    violation: float = 3.0
-    coverage: float = 0.3
+    violation: float = 1.5
+    coverage: float = 1.0
     completion_bonus: float = 5.0
+    wall_skip_penalty: float = 0.5
+    wall_completion_bonus: float = 3.0
+    room_completion_bonus: float = 2.0
 
 
 # ── Reward breakdown ───────────────────────────────────────────────────────
@@ -366,27 +380,32 @@ def compute_reward(
 
     # ── Panelization reward ──
     if panel_action is not None:
-        # SPUR
-        breakdown.spur = _compute_spur(panel_action)
+        if panel_action.skip:
+            # Penalize skipping walls — the agent must learn to panelize
+            breakdown.violation = -weights.wall_skip_penalty
+            breakdown.info["wall_skipped"] = 1.0
+        else:
+            # SPUR
+            breakdown.spur = _compute_spur(panel_action)
 
-        # Waste
-        breakdown.waste = _compute_waste_penalty(panel_action)
+            # Waste
+            breakdown.waste = _compute_waste_penalty(panel_action)
 
-        # Violations
-        if wall_panel_type is not None:
-            violations = _detect_panel_violations(
-                panel_action, wall_length_inches, wall_panel_type, store,
-            )
-            breakdown.violations = violations
-            if violations:
-                # Scale violation penalty by number of violations
-                breakdown.violation = -min(float(len(violations)), 3.0) / 3.0
+            # Violations
+            if wall_panel_type is not None:
+                violations = _detect_panel_violations(
+                    panel_action, wall_length_inches, wall_panel_type, store,
+                )
+                breakdown.violations = violations
+                if violations:
+                    # Scale violation penalty by number of violations
+                    breakdown.violation = -min(float(len(violations)), 3.0) / 3.0
 
-        # Info metrics
-        if panel_action.recommendation is not None:
-            breakdown.info["waste_percentage"] = panel_action.recommendation.waste_percentage
-            breakdown.info["num_panels"] = float(panel_action.recommendation.quantity)
-            breakdown.info["requires_splice"] = float(panel_action.recommendation.requires_splice)
+            # Info metrics
+            if panel_action.recommendation is not None:
+                breakdown.info["waste_percentage"] = panel_action.recommendation.waste_percentage
+                breakdown.info["num_panels"] = float(panel_action.recommendation.quantity)
+                breakdown.info["requires_splice"] = float(panel_action.recommendation.requires_splice)
 
     # ── Placement reward ──
     if placement_action is not None:
@@ -438,15 +457,17 @@ def compute_reward(
     if is_terminal:
         wall_coverage = walls_assigned / max(total_walls, 1)
         room_coverage = rooms_assigned / max(total_rooms, 1)
-        total_coverage = (wall_coverage + room_coverage) / 2.0
 
-        # Scale completion bonus by coverage fraction
-        completion = weights.completion_bonus * total_coverage
+        # Separate bonuses so skipping walls can't be subsidized by rooms
+        wall_bonus = weights.wall_completion_bonus * wall_coverage
+        room_bonus = weights.room_completion_bonus * room_coverage
+        completion = wall_bonus + room_bonus
         breakdown.total += completion
         breakdown.info["completion_bonus"] = completion
+        breakdown.info["wall_completion_bonus"] = wall_bonus
+        breakdown.info["room_completion_bonus"] = room_bonus
         breakdown.info["wall_coverage"] = wall_coverage
         breakdown.info["room_coverage"] = room_coverage
-        breakdown.info["total_coverage"] = total_coverage
 
     # ── Log violations at WARNING level ──
     if breakdown.violations:

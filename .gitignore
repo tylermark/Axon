@@ -38,6 +38,7 @@ wandb/
 
 # Data
 data/
+!src/knowledge_graph/data/
 *.pdf
 
 # Jupyter

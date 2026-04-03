@@ -1,0 +1,134 @@
+[
+  {
+    "sku": "CAP-CON-SPL-16GA",
+    "name": "Track Splice — 16ga",
+    "connection_type": "splice",
+    "compatible_gauges": [14, 16],
+    "compatible_stud_depths": [3.5, 6.0],
+    "load_rating_lbs": 4500.0,
+    "fire_rated": false,
+    "unit_cost": 3.25,
+    "units_per": "each"
+  },
+  {
+    "sku": "CAP-CON-SPL-18GA",
+    "name": "Track Splice — 18ga",
+    "connection_type": "splice",
+    "compatible_gauges": [18],
+    "compatible_stud_depths": [3.5, 6.0],
+    "load_rating_lbs": 3200.0,
+    "fire_rated": false,
+    "unit_cost": 2.75,
+    "units_per": "each"
+  },
+  {
+    "sku": "CAP-CON-SPL-20GA",
+    "name": "Track Splice — 20ga",
+    "connection_type": "splice",
+    "compatible_gauges": [20, 25],
+    "compatible_stud_depths": [3.5],
+    "load_rating_lbs": 1800.0,
+    "fire_rated": false,
+    "unit_cost": 2.10,
+    "units_per": "each"
+  },
+  {
+    "sku": "CAP-CON-CLP-350",
+    "name": "Clip Angle — 3.5\" Stud",
+    "connection_type": "clip_angle",
+    "compatible_gauges": [16, 18, 20, 25],
+    "compatible_stud_depths": [3.5],
+    "load_rating_lbs": 2800.0,
+    "fire_rated": false,
+    "unit_cost": 1.85,
+    "units_per": "each"
+  },
+  {
+    "sku": "CAP-CON-CLP-600",
+    "name": "Clip Angle — 6\" Stud",
+    "connection_type": "clip_angle",
+    "compatible_gauges": [14, 16, 18],
+    "compatible_stud_depths": [6.0],
+    "load_rating_lbs": 3800.0,
+    "fire_rated": false,
+    "unit_cost": 2.40,
+    "units_per": "each"
+  },
+  {
+    "sku": "CAP-CON-BRG-150",
+    "name": "Cold-Rolled Channel Bridging — 1.5\"",
+    "connection_type": "bridging",
+    "compatible_gauges": [14, 16, 18, 20, 25],
+    "compatible_stud_depths": [3.5, 6.0],
+    "load_rating_lbs": null,
+    "fire_rated": false,
+    "unit_cost": 1.20,
+    "units_per": "per_foot"
+  },
+  {
+    "sku": "CAP-CON-BLK-350",
+    "name": "Stud Blocking — 3.5\"",
+    "connection_type": "blocking",
+    "compatible_gauges": [16, 18, 20, 25],
+    "compatible_stud_depths": [3.5],
+    "load_rating_lbs": null,
+    "fire_rated": false,
+    "unit_cost": 1.50,
+    "units_per": "per_foot"
+  },
+  {
+    "sku": "CAP-CON-BLK-600",
+    "name": "Stud Blocking — 6\"",
+    "connection_type": "blocking",
+    "compatible_gauges": [14, 16, 18],
+    "compatible_stud_depths": [6.0],
+    "load_rating_lbs": null,
+    "fire_rated": false,
+    "unit_cost": 2.00,
+    "units_per": "per_foot"
+  },
+  {
+    "sku": "CAP-CON-TEK-08",
+    "name": "#8 Self-Drilling TEK Screw",
+    "connection_type": "fastener",
+    "compatible_gauges": [20, 25],
+    "compatible_stud_depths": [3.5, 6.0],
+    "load_rating_lbs": 180.0,
+    "fire_rated": false,
+    "unit_cost": 0.06,
+    "units_per": "each"
+  },
+  {
+    "sku": "CAP-CON-TEK-10",
+    "name": "#10 Self-Drilling TEK Screw",
+    "connection_type": "fastener",
+    "compatible_gauges": [16, 18, 20],
+    "compatible_stud_depths": [3.5, 6.0],
+    "load_rating_lbs": 320.0,
+    "fire_rated": false,
+    "unit_cost": 0.08,
+    "units_per": "each"
+  },
+  {
+    "sku": "CAP-CON-TEK-12",
+    "name": "#12 Self-Drilling TEK Screw",
+    "connection_type": "fastener",
+    "compatible_gauges": [14, 16],
+    "compatible_stud_depths": [3.5, 6.0],
+    "load_rating_lbs": 480.0,
+    "fire_rated": false,
+    "unit_cost": 0.12,
+    "units_per": "each"
+  },
+  {
+    "sku": "CAP-CON-HDA-STD",
+    "name": "Holdown Anchor — Standard",
+    "connection_type": "holdown",
+    "compatible_gauges": [14, 16, 18],
+    "compatible_stud_depths": [3.5, 6.0],
+    "load_rating_lbs": 6200.0,
+    "fire_rated": false,
+    "unit_cost": 18.50,
+    "units_per": "each"
+  }
+]

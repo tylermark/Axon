@@ -1,0 +1,41 @@
+[
+  {
+    "sku": "CAP-MCH-HW2500",
+    "name": "Howick FRAMA 2500",
+    "machine_type": "roll_former",
+    "max_gauge": 16,
+    "min_gauge": 25,
+    "max_length_inches": 300.0,
+    "max_web_depth_inches": 6.0,
+    "max_flange_width_inches": 2.5,
+    "coil_width_range_inches": [6.0, 16.0],
+    "speed_feet_per_minute": 45.0,
+    "tolerance_inches": 0.02
+  },
+  {
+    "sku": "CAP-MCH-HW3500",
+    "name": "Howick FRAMA 3500",
+    "machine_type": "roll_former",
+    "max_gauge": 14,
+    "min_gauge": 25,
+    "max_length_inches": 420.0,
+    "max_web_depth_inches": 8.0,
+    "max_flange_width_inches": 3.0,
+    "coil_width_range_inches": [6.0, 22.0],
+    "speed_feet_per_minute": 40.0,
+    "tolerance_inches": 0.02
+  },
+  {
+    "sku": "CAP-MCH-ZG3XL",
+    "name": "Zund G3 3XL",
+    "machine_type": "cutter",
+    "max_gauge": 20,
+    "min_gauge": 25,
+    "max_length_inches": 120.0,
+    "max_web_depth_inches": 0.0,
+    "max_flange_width_inches": 0.0,
+    "coil_width_range_inches": [0.0, 0.0],
+    "speed_feet_per_minute": 30.0,
+    "tolerance_inches": 0.01
+  }
+]

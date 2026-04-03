@@ -338,7 +338,7 @@ class ArchCAD400KDataset(Dataset):
         n = min(n_prims, mp)
         entities[:n] = feat7[:n]
         mask[:n] = True
-        types[:n] = raw_labels[:n]
+        types[:n] = raw_labels[:n].clamp(max=100)
 
         return {
             "entities": entities,

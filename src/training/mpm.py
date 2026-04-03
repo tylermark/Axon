@@ -81,7 +81,7 @@ class MPMConfig:
     grad_clip_norm: float = 1.0
     warmup_steps: int = 1000
     entity_type_loss_weight: float = 0.1
-    num_entity_types: int = 6
+    num_entity_types: int = 101
     checkpoint_dir: str = "checkpoints/mpm"
     checkpoint_every: int = 10
     resume_from: str | None = None

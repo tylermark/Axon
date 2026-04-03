@@ -467,9 +467,9 @@ def validate_wall_panelization(
         total_assigned += cut_length
         prev_panel = panel
 
-    # Coverage check
+    # Coverage check — allow up to 1" for min-length trim waste
     coverage_diff = abs(total_assigned - wall_length_inches)
-    if coverage_diff > _LENGTH_TOLERANCE_INCHES:
+    if coverage_diff > 1.0:
         if total_assigned < wall_length_inches:
             errors.append(
                 f'Panels cover {total_assigned}" but wall is '

@@ -173,7 +173,7 @@ def get_panel_candidates(
         # happens when wall is shorter than panel min_length. The agent
         # should SKIP these walls rather than place an oversized panel.
         total_cut = sum(rec.cut_lengths_inches) if rec.cut_lengths_inches else 0.0
-        if total_cut > panelizable_length + 0.5:
+        if total_cut > panelizable_length + 1.0:
             continue
 
         validation = validate_panel_fabrication(

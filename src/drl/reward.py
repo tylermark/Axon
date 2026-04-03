@@ -225,9 +225,10 @@ def _detect_panel_violations(
         )
 
     # 2. Coverage check: total cut lengths vs wall length
+    # Allow up to 1" overlap for min-length trim (e.g. 24" panel on 23.5" wall)
     total_coverage = sum(rec.cut_lengths_inches) if rec.cut_lengths_inches else 0.0
     coverage_diff = total_coverage - wall_length_inches
-    if abs(coverage_diff) > 0.5:  # 1/2 inch tolerance
+    if abs(coverage_diff) > 1.0:
         if coverage_diff < 0:
             violations.append(
                 f"Gap: panels cover {total_coverage:.1f}\" but wall is "

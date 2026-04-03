@@ -239,32 +239,48 @@ class ArchCAD400KDataset(Dataset):
     # -- Shard mode ---------------------------------------------------------
 
     def _init_shard_mode(self, shard_files: list[Path]) -> None:
-        """Load pre-processed shard metadata."""
+        """Load pre-processed shard metadata.
+
+        Shards are packed per-drawing: ``features`` is a flat tensor of all
+        primitives across drawings, and ``drawing_offsets`` marks where each
+        drawing starts.  The number of *drawings* (not primitives) is what
+        we count as samples.
+        """
         self._shard_mode = True
         self._shard_files = shard_files
 
-        # Each shard is a dict with 'entities', 'attention_mask', 'entity_types'
-        # all with leading sample dimension.  Count total samples.
         self._shard_lengths: list[int] = []
-        self._shard_cache: dict[int, dict[str, torch.Tensor]] = {}
+        self._shard_cache: dict[int, dict] = {}
         total = 0
         for sf in shard_files:
-            # Peek only at first tensor to get length, avoid loading all.
-            # We assume all tensors in the shard share the same first dim.
             peek = torch.load(sf, map_location="cpu", weights_only=True)
-            n = next(iter(peek.values())).size(0) if peek else 0
+            if "drawing_offsets" in peek:
+                # Number of drawings = len(offsets) - 1
+                n = peek["drawing_offsets"].size(0) - 1
+            elif "drawing_names" in peek and isinstance(peek["drawing_names"], list):
+                n = len(peek["drawing_names"])
+            else:
+                # Fallback: assume first tensor's dim-0 is sample count
+                n = next(iter(peek.values())).size(0) if peek else 0
             self._shard_lengths.append(n)
             total += n
+            del peek
 
         self._total_len = total
         logger.info(
-            "ArchCAD400K shard mode: %d shards, %d samples total",
+            "ArchCAD400K shard mode: %d shards, %d drawings total",
             len(shard_files),
             total,
         )
 
     def _get_shard_sample(self, idx: int) -> dict[str, torch.Tensor]:
-        """Retrieve a single sample from shard storage."""
+        """Retrieve a single drawing's primitives from shard storage.
+
+        Each shard packs multiple drawings into flat ``features`` and
+        ``labels`` tensors, indexed by ``drawing_offsets``.  This method
+        slices out the primitives for one drawing and pads/truncates to
+        ``max_primitives``.
+        """
         offset = 0
         for shard_idx, length in enumerate(self._shard_lengths):
             if idx < offset + length:
@@ -276,10 +292,59 @@ class ArchCAD400KDataset(Dataset):
                         weights_only=True,
                     )
                 shard = self._shard_cache[shard_idx]
-                return {k: v[local_idx] for k, v in shard.items()}
+                return self._extract_drawing(shard, local_idx)
             offset += length
         msg = f"Index {idx} out of range for {self._total_len} shard samples"
         raise IndexError(msg)
+
+    def _extract_drawing(
+        self, shard: dict, drawing_idx: int
+    ) -> dict[str, torch.Tensor]:
+        """Extract and pad a single drawing from a packed shard."""
+        offsets = shard["drawing_offsets"]
+        start = int(offsets[drawing_idx])
+        end = int(offsets[drawing_idx + 1])
+
+        raw_features = shard["features"][start:end]  # (n_prims, 12)
+        raw_labels = shard["labels"][start:end]  # (n_prims,)
+        n_prims = raw_features.size(0)
+
+        # Map 12-dim shard features to 7-dim entity format:
+        # Take first 4 cols as coordinates (x1, y1, x2, y2), col 4 as type,
+        # and zero-pad remaining 2 dims.
+        n_feat = raw_features.size(1)
+        if n_feat >= 7:
+            feat7 = raw_features[:, :7]
+        else:
+            feat7 = torch.zeros(n_prims, 7, dtype=torch.float32)
+            feat7[:, :min(n_feat, 4)] = raw_features[:, :min(n_feat, 4)]
+            if n_feat > 4:
+                feat7[:, 4] = raw_features[:, 4]
+
+        # Normalize coordinates to [0, 1]
+        coords = feat7[:, :4]
+        if coords.numel() > 0:
+            cmin = coords.min()
+            cmax = coords.max()
+            if cmax - cmin > 1e-6:
+                feat7[:, :4] = (coords - cmin) / (cmax - cmin)
+
+        # Pad or truncate to max_primitives
+        mp = self.max_primitives
+        entities = torch.zeros(mp, 7, dtype=torch.float32)
+        mask = torch.zeros(mp, dtype=torch.bool)
+        types = torch.zeros(mp, dtype=torch.int64)
+
+        n = min(n_prims, mp)
+        entities[:n] = feat7[:n]
+        mask[:n] = True
+        types[:n] = raw_labels[:n]
+
+        return {
+            "entities": entities,
+            "attention_mask": mask,
+            "entity_types": types,
+        }
 
     # -- Zip mode -----------------------------------------------------------
 

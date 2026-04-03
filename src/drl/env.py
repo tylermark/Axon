@@ -686,37 +686,40 @@ class PanelizationEnv(gym.Env):
             remaining = self.wall_remaining_inches.get(wall.edge_id)
             sub_segments = self._sub_segment_map.get(wall.edge_id, [])
 
+            # Compute the effective length that the reward function will
+            # evaluate against — candidates must be generated for this
+            # exact length so recommendations don't overshoot.
+            to_inches = self._scale / 25.4 if self._scale != 1.0 else 1.0 / 72.0
+
             if remaining is not None and remaining > 0.0:
-                # Multi-panel continuation — query for the remaining length.
-                # Create a synthetic wall with the remaining length for
-                # candidate generation. We use the existing get_panel_candidates
-                # but pass filtered openings (already accounted for).
-                self._panel_candidates = get_panel_candidates(
-                    self.store,
-                    wall,
-                    classification,
-                    [],  # Openings already accounted for in sub-segment splitting
-                    self._scale,
-                )
+                eff_length = remaining
             elif sub_segments and self.current_sub_segment_idx < len(sub_segments):
-                # DRL-007: Use sub-segment length — openings are already
-                # excluded by the sub-segment computation.
-                self._panel_candidates = get_panel_candidates(
-                    self.store,
-                    wall,
-                    classification,
-                    self._opening_map.get(wall.edge_id, []),
-                    self._scale,
-                )
+                eff_length = sub_segments[self.current_sub_segment_idx].length_inches
             else:
-                wall_openings = self._opening_map.get(wall.edge_id, [])
-                self._panel_candidates = get_panel_candidates(
-                    self.store,
-                    wall,
-                    classification,
-                    wall_openings,
-                    self._scale,
+                full_length = wall.length * to_inches
+                opening_width = sum(
+                    o.width * to_inches
+                    for o in self._opening_map.get(wall.edge_id, [])
                 )
+                eff_length = max(full_length - opening_width, 0.0)
+
+            # Apply corner thickness deduction (DRL-008)
+            corner_deduction = get_corner_thickness_deduction(
+                wall.edge_id,
+                self._junction_map,
+                self._walls,
+                self._scale,
+            )
+            eff_length = max(eff_length - corner_deduction, 0.0)
+
+            self._panel_candidates = get_panel_candidates(
+                self.store,
+                wall,
+                classification,
+                [],  # openings already accounted for in eff_length
+                self._scale,
+                effective_length_inches=eff_length,
+            )
 
             # Build action mask (panelization range)
             panel_mask = compute_panel_action_mask(len(self._panel_candidates))

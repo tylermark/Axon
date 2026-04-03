@@ -113,6 +113,7 @@ def get_panel_candidates(
     classification: WallClassification,
     openings_on_wall: list[Opening],
     scale: float,
+    effective_length_inches: float | None = None,
 ) -> list[PanelRecommendation]:
     """Query the KG for valid panel recommendations for a wall segment.
 
@@ -129,16 +130,24 @@ def get_panel_candidates(
         classification: Classification for this wall.
         openings_on_wall: Openings detected on this wall.
         scale: Scale factor from PDF user units to millimeters.
+        effective_length_inches: Pre-computed effective wall length in
+            inches (after openings, corner deductions, etc.).  When
+            provided, this overrides the internally computed length so
+            that panel recommendations match the actual panelizable
+            length the reward function evaluates against.
 
     Returns:
         Up to MAX_CANDIDATES PanelRecommendation objects.
     """
-    to_inches = scale / 25.4 if scale != 1.0 else 1.0 / 72.0
-    wall_length_inches = wall.length * to_inches
+    if effective_length_inches is not None:
+        panelizable_length = effective_length_inches
+    else:
+        to_inches = scale / 25.4 if scale != 1.0 else 1.0 / 72.0
+        wall_length_inches = wall.length * to_inches
 
-    # Subtract opening widths — panels must avoid openings
-    opening_width_total = sum(o.width * to_inches for o in openings_on_wall)
-    panelizable_length = max(wall_length_inches - opening_width_total, 0.0)
+        # Subtract opening widths — panels must avoid openings
+        opening_width_total = sum(o.width * to_inches for o in openings_on_wall)
+        panelizable_length = max(wall_length_inches - opening_width_total, 0.0)
 
     if panelizable_length <= 0.0:
         return []

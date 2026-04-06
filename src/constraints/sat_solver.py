@@ -28,6 +28,7 @@ from src.constraints.axioms import (
     AxiomRegistry,
     compute_edge_angles,
     compute_edge_directions,
+    find_parallel_pairs,
 )
 
 if TYPE_CHECKING:
@@ -362,26 +363,11 @@ def _extract_parallel_info(
 
     angle_threshold = math.radians(5.0)  # consistent with axiom default
 
-    # Adaptive chunk: keep each (C, E) tensor under ~32 MB.
-    CHUNK = max(1, min(4096, (8 * 1024 * 1024) // max(num_edges, 1)))
-    ei_list: list[torch.Tensor] = []
-    ej_list: list[torch.Tensor] = []
-    for start in range(0, num_edges, CHUNK):
-        end = min(start + CHUNK, num_edges)
-        diff = (edge_angles[start:end].unsqueeze(1) - edge_angles.unsqueeze(0)).abs()
-        diff = torch.min(diff, math.pi - diff)
-        row_idx = torch.arange(start, end, device=device).unsqueeze(1)
-        col_idx = torch.arange(num_edges, device=device).unsqueeze(0)
-        mask = (diff < angle_threshold) & (col_idx > row_idx)
-        ri, ci = torch.where(mask)
-        ei_list.append(ri + start)
-        ej_list.append(ci)
-
-    if not ei_list or sum(t.numel() for t in ei_list) == 0:
+    # O(E log E) parallel pair detection via sort + scan.
+    ei, ej = find_parallel_pairs(edge_angles, angle_threshold)
+    if ei.numel() == 0:
         return None, None
 
-    ei = torch.cat(ei_list)
-    ej = torch.cat(ej_list)
     parallel_pairs = torch.stack([ei, ej], dim=1)  # (N_pairs, 2)
 
     # Wall thickness = perpendicular distance between parallel edges.

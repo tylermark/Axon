@@ -39,6 +39,198 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
+def find_parallel_pairs(
+    angles: torch.Tensor,
+    threshold: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Find all edge pairs with near-parallel angles via sort + scan.
+
+    O(E log E) time, O(E + P) memory where P = number of parallel pairs.
+    Replaces the O(E²) pairwise angle-diff matrix.
+
+    Args:
+        angles: Edge angles in [0, π), shape ``(E,)``.
+        threshold: Max angle difference (radians) to count as parallel.
+
+    Returns:
+        ``(ei, ej)`` — original edge indices of parallel pairs (ei < ej).
+    """
+    device = angles.device
+    num_edges = angles.shape[0]
+    if num_edges < 2:
+        return (
+            torch.empty(0, dtype=torch.long, device=device),
+            torch.empty(0, dtype=torch.long, device=device),
+        )
+
+    # Sort edges by angle; work on CPU for the scan loop.
+    sorted_order = torch.argsort(angles)
+    sorted_angles = angles[sorted_order].cpu()
+
+    ei_list: list[tuple[int, int]] = []
+
+    # Sliding window: for each edge i, scan forward while angle diff < threshold.
+    for i in range(num_edges):
+        j = i + 1
+        while j < num_edges:
+            diff = abs(sorted_angles[j].item() - sorted_angles[i].item())
+            if diff > threshold:
+                break
+            ei_list.append((sorted_order[i].item(), sorted_order[j].item()))
+            j += 1
+
+    # Also handle wraparound: edges near 0 and near π are parallel.
+    # Edges near π have angle ≈ π, edges near 0 have angle ≈ 0.
+    # The π-periodic distance: min(diff, π - diff) < threshold
+    # means we also need pairs where sorted_angles[j] + π - sorted_angles[i] < threshold,
+    # i.e. the last few edges (near π) paired with the first few (near 0).
+    if num_edges > 1:
+        i = num_edges - 1
+        j = 0
+        while j < i:
+            diff = math.pi - sorted_angles[i].item() + sorted_angles[j].item()
+            if diff > threshold:
+                break
+            ei_list.append((sorted_order[i].item(), sorted_order[j].item()))
+            j += 1
+        # Scan backward from the end for other near-π edges too.
+        for i in range(num_edges - 2, -1, -1):
+            if math.pi - sorted_angles[i].item() > threshold:
+                break
+            j = 0
+            while j < i:
+                diff = math.pi - sorted_angles[i].item() + sorted_angles[j].item()
+                if diff > threshold:
+                    break
+                # Avoid duplicates from the first wraparound scan.
+                pair = (sorted_order[i].item(), sorted_order[j].item())
+                if pair not in ei_list:  # Small set for wraparound
+                    ei_list.append(pair)
+                j += 1
+
+    if not ei_list:
+        return (
+            torch.empty(0, dtype=torch.long, device=device),
+            torch.empty(0, dtype=torch.long, device=device),
+        )
+
+    pairs = torch.tensor(ei_list, dtype=torch.long, device=device)
+    # Ensure ei < ej for consistency.
+    ei = torch.min(pairs[:, 0], pairs[:, 1])
+    ej = torch.max(pairs[:, 0], pairs[:, 1])
+    # Deduplicate.
+    combined = ei * num_edges + ej
+    unique_idx = torch.unique(combined, return_inverse=False, sorted=True)
+    ei = unique_idx // num_edges
+    ej = unique_idx % num_edges
+    return ei, ej
+
+
+def find_nearby_edge_pairs(
+    edge_index: torch.Tensor,
+    positions: torch.Tensor,
+    proximity_threshold: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Find non-adjacent edge pairs whose midpoints are within proximity.
+
+    Uses spatial bucketing: O(E) expected time and memory.
+
+    Args:
+        edge_index: ``(2, E)`` COO.
+        positions: ``(N, 2)`` node positions (flat).
+        proximity_threshold: Distance threshold for candidate pairs.
+
+    Returns:
+        ``(ei, ej)`` — edge indices of nearby non-adjacent pairs (ei < ej).
+    """
+    device = positions.device
+    src, dst = edge_index[0], edge_index[1]
+    num_edges = edge_index.shape[1]
+
+    if num_edges < 2:
+        return (
+            torch.empty(0, dtype=torch.long, device=device),
+            torch.empty(0, dtype=torch.long, device=device),
+        )
+
+    mid = (positions[src] + positions[dst]) * 0.5  # (E, 2)
+    half_len = (positions[dst] - positions[src]).norm(dim=-1) * 0.5
+    max_reach = half_len + proximity_threshold  # (E,)
+
+    # Bucket size = 2 * max(max_reach) to ensure nearby edges share a bucket
+    # or adjacent bucket.
+    bucket_size = float((2.0 * max_reach.max()).item())
+    if bucket_size < 1e-6:
+        bucket_size = 1.0
+
+    # Assign each edge to a 2D grid bucket (on CPU for dict operations).
+    mid_cpu = mid.cpu()
+    bx = (mid_cpu[:, 0] / bucket_size).long()
+    by = (mid_cpu[:, 1] / bucket_size).long()
+
+    # Build bucket → edge list mapping.
+    buckets: dict[tuple[int, int], list[int]] = {}
+    for e in range(num_edges):
+        key = (bx[e].item(), by[e].item())
+        if key not in buckets:
+            buckets[key] = []
+        buckets[key].append(e)
+
+    # Build node → edge set for adjacency check.
+    src_cpu = src.cpu().tolist()
+    dst_cpu = dst.cpu().tolist()
+    node_to_edges: dict[int, set[int]] = {}
+    for e in range(num_edges):
+        for n in (src_cpu[e], dst_cpu[e]):
+            if n not in node_to_edges:
+                node_to_edges[n] = set()
+            node_to_edges[n].add(e)
+
+    # Check pairs within same and neighboring buckets.
+    mid_np = mid_cpu.numpy()
+    half_len_cpu = half_len.cpu().numpy()
+    ei_pairs: list[tuple[int, int]] = []
+
+    visited_buckets: set[tuple[int, int]] = set()
+    for (gx, gy), edges in buckets.items():
+        visited_buckets.add((gx, gy))
+        # Check all 9 neighboring cells (including self).
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                neighbor_key = (gx + dx, gy + dy)
+                if neighbor_key not in buckets:
+                    continue
+                # For self-bucket, check internal pairs. For others,
+                # only check if we haven't visited the neighbor yet
+                # (to avoid double-counting).
+                if neighbor_key in visited_buckets and neighbor_key != (gx, gy):
+                    continue
+                other_edges = buckets[neighbor_key]
+                for e1 in edges:
+                    for e2 in other_edges:
+                        if e1 >= e2:
+                            continue
+                        # Check adjacency: edges sharing a node.
+                        nodes_e1 = {src_cpu[e1], dst_cpu[e1]}
+                        nodes_e2 = {src_cpu[e2], dst_cpu[e2]}
+                        if nodes_e1 & nodes_e2:
+                            continue
+                        # Check proximity.
+                        d = ((mid_np[e1] - mid_np[e2]) ** 2).sum() ** 0.5
+                        reach = half_len_cpu[e1] + half_len_cpu[e2] + proximity_threshold
+                        if d < reach:
+                            ei_pairs.append((e1, e2))
+
+    if not ei_pairs:
+        return (
+            torch.empty(0, dtype=torch.long, device=device),
+            torch.empty(0, dtype=torch.long, device=device),
+        )
+
+    pairs = torch.tensor(ei_pairs, dtype=torch.long, device=device)
+    return pairs[:, 0], pairs[:, 1]
+
+
 def compute_edge_directions(
     node_positions: torch.Tensor,
     edge_index: torch.Tensor,
@@ -340,29 +532,10 @@ class ParallelPairConstancyAxiom(Axiom):
 
         positions = node_positions.reshape(-1, 2) if node_positions.dim() == 3 else node_positions
 
-        # Find parallel pairs: edges with similar angles.
-        # Adaptive chunk: keep each (chunk, E) tensor under ~32 MB.
-        CHUNK = max(1, min(4096, (8 * 1024 * 1024) // max(num_edges, 1)))
-        ei_list: list[torch.Tensor] = []
-        ej_list: list[torch.Tensor] = []
-        for start in range(0, num_edges, CHUNK):
-            end = min(start + CHUNK, num_edges)
-            # angle_diff: (chunk, num_edges) — only rows [start:end]
-            diff = (angles[start:end].unsqueeze(1) - angles.unsqueeze(0)).abs()
-            diff = torch.min(diff, math.pi - diff)
-            # Upper-triangular: only keep pairs where col > row
-            row_idx = torch.arange(start, end, device=device).unsqueeze(1)
-            col_idx = torch.arange(num_edges, device=device).unsqueeze(0)
-            mask = (diff < self.angle_threshold) & (col_idx > row_idx)
-            ri, ci = torch.where(mask)
-            ei_list.append(ri + start)
-            ej_list.append(ci)
-
-        if not ei_list or sum(t.numel() for t in ei_list) == 0:
+        # Find parallel pairs via O(E log E) sort + scan.
+        ei, ej = find_parallel_pairs(angles, self.angle_threshold)
+        if ei.numel() == 0:
             return self._empty_result(device)
-
-        ei = torch.cat(ei_list)
-        ej = torch.cat(ej_list)
 
         # Perpendicular distance between parallel line segments.
         # Use midpoint-to-line distance for differentiability.
@@ -551,50 +724,10 @@ class SpatialNonIntersectionAxiom(Axiom):
 
         src, dst = edge_index[0], edge_index[1]
 
-        # Pre-compute per-edge midpoints and half-lengths for spatial filter.
-        mid = (positions[src] + positions[dst]) * 0.5  # (E, 2)
-        half_len = (positions[dst] - positions[src]).norm(dim=-1) * 0.5
-
-        # Adaptive chunk: NonIntersection creates ~5 tensors of (C, E) per iter,
-        # so target ~6 MB per tensor → ~30 MB total per iteration.
-        CHUNK = max(1, min(4096, (1_500_000) // max(num_edges, 1)))
-        ei_list: list[torch.Tensor] = []
-        ej_list: list[torch.Tensor] = []
-        for start in range(0, num_edges, CHUNK):
-            end = min(start + CHUNK, num_edges)
-            chunk_src = src[start:end]  # (C,)
-            chunk_dst = dst[start:end]
-
-            # Edge adjacency: edges sharing a node (C, E)
-            edge_adj = (
-                (chunk_src.unsqueeze(1) == src.unsqueeze(0))
-                | (chunk_src.unsqueeze(1) == dst.unsqueeze(0))
-                | (chunk_dst.unsqueeze(1) == src.unsqueeze(0))
-                | (chunk_dst.unsqueeze(1) == dst.unsqueeze(0))
-            )
-
-            # Upper-triangular: col > row
-            row_idx = torch.arange(start, end, device=device).unsqueeze(1)
-            col_idx = torch.arange(num_edges, device=device).unsqueeze(0)
-            mask = ~edge_adj & (col_idx > row_idx)
-
-            # Spatial pre-filter: midpoint proximity
-            chunk_mid = mid[start:end]  # (C, 2)
-            md = (chunk_mid.unsqueeze(1) - mid.unsqueeze(0)).norm(dim=-1)
-            chunk_half = half_len[start:end]
-            prox = chunk_half.unsqueeze(1) + half_len.unsqueeze(0) + self.proximity_threshold
-            mask = mask & (md < prox)
-
-            ri, ci = torch.where(mask)
-            ei_list.append(ri + start)
-            ej_list.append(ci)
-
-        if not ei_list or sum(t.numel() for t in ei_list) == 0:
+        # Find nearby non-adjacent edge pairs via spatial bucketing — O(E).
+        ei, ej = find_nearby_edge_pairs(edge_index, positions, self.proximity_threshold)
+        if ei.numel() == 0:
             return self._empty_result(device)
-
-        ei = torch.cat(ei_list)
-        ej = torch.cat(ej_list)
-        del ei_list, ej_list
 
         # Differentiable segment-segment distance — chunked to bound memory.
         PAIR_CHUNK = 65536

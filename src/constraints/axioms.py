@@ -593,30 +593,37 @@ class SpatialNonIntersectionAxiom(Axiom):
 
         ei = torch.cat(ei_list)
         ej = torch.cat(ej_list)
+        del ei_list, ej_list
 
-        # Differentiable segment-segment closest distance.
-        min_dists = self._segment_distance(
-            positions[src[ei]],
-            positions[dst[ei]],
-            positions[src[ej]],
-            positions[dst[ej]],
-        )
+        # Differentiable segment-segment distance — chunked to bound memory.
+        PAIR_CHUNK = 65536
+        n_pairs = ei.shape[0]
+        loss_parts: list[torch.Tensor] = []
+        viol_parts: list[torch.Tensor] = []
+        score_parts: list[torch.Tensor] = []
+        for ps in range(0, n_pairs, PAIR_CHUNK):
+            pe = min(ps + PAIR_CHUNK, n_pairs)
+            ei_c, ej_c = ei[ps:pe], ej[ps:pe]
+            dists = self._segment_distance(
+                positions[src[ei_c]],
+                positions[dst[ei_c]],
+                positions[src[ej_c]],
+                positions[dst[ej_c]],
+            )
+            chunk_loss = torch.relu(self.epsilon - dists)
+            loss_parts.append(chunk_loss.sum())
+            viol_parts.append(chunk_loss > 0)
+            score_parts.append(chunk_loss.detach())
 
-        # Loss: ReLU(epsilon - min_distance).
-        per_pair_loss = torch.relu(self.epsilon - min_dists)
-        loss = (
-            per_pair_loss.mean()
-            if per_pair_loss.numel() > 0
-            else torch.tensor(0.0, device=device, requires_grad=True)
-        )
-
-        violation_mask = per_pair_loss > 0
+        per_pair_loss = torch.cat(score_parts)
+        loss = sum(loss_parts) / max(n_pairs, 1)
+        violation_mask = torch.cat(viol_parts)
 
         return AxiomResult(
             name=self.axiom_name,
             loss=loss,
             violation_mask=violation_mask,
-            violation_scores=per_pair_loss.detach(),
+            violation_scores=per_pair_loss,
             weight=self.weight,
         )
 

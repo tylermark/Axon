@@ -341,21 +341,28 @@ class ParallelPairConstancyAxiom(Axiom):
         positions = node_positions.reshape(-1, 2) if node_positions.dim() == 3 else node_positions
 
         # Find parallel pairs: edges with similar angles.
-        # Pairwise angle difference, accounting for π periodicity.
-        angle_diff = (angles.unsqueeze(0) - angles.unsqueeze(1)).abs()
-        angle_diff = torch.min(angle_diff, math.pi - angle_diff)
+        # Chunked to avoid O(N²) memory — process rows in blocks.
+        CHUNK = 4096
+        ei_list: list[torch.Tensor] = []
+        ej_list: list[torch.Tensor] = []
+        for start in range(0, num_edges, CHUNK):
+            end = min(start + CHUNK, num_edges)
+            # angle_diff: (chunk, num_edges) — only rows [start:end]
+            diff = (angles[start:end].unsqueeze(1) - angles.unsqueeze(0)).abs()
+            diff = torch.min(diff, math.pi - diff)
+            # Upper-triangular: only keep pairs where col > row
+            row_idx = torch.arange(start, end, device=device).unsqueeze(1)
+            col_idx = torch.arange(num_edges, device=device).unsqueeze(0)
+            mask = (diff < self.angle_threshold) & (col_idx > row_idx)
+            ri, ci = torch.where(mask)
+            ei_list.append(ri + start)
+            ej_list.append(ci)
 
-        # Upper triangular mask to avoid duplicates.
-        upper = torch.triu(
-            torch.ones(num_edges, num_edges, device=device, dtype=torch.bool), diagonal=1
-        )
-        parallel_mask = (angle_diff < self.angle_threshold) & upper
-
-        pair_idx = torch.where(parallel_mask)
-        if pair_idx[0].numel() == 0:
+        if not ei_list or sum(t.numel() for t in ei_list) == 0:
             return self._empty_result(device)
 
-        ei, ej = pair_idx
+        ei = torch.cat(ei_list)
+        ej = torch.cat(ej_list)
 
         # Perpendicular distance between parallel line segments.
         # Use midpoint-to-line distance for differentiability.
@@ -544,34 +551,48 @@ class SpatialNonIntersectionAxiom(Axiom):
 
         src, dst = edge_index[0], edge_index[1]
 
-        # Build adjacency set for edges (edges sharing a node are adjacent).
-        edge_adj = (
-            (src.unsqueeze(0) == src.unsqueeze(1))
-            | (src.unsqueeze(0) == dst.unsqueeze(1))
-            | (dst.unsqueeze(0) == src.unsqueeze(1))
-            | (dst.unsqueeze(0) == dst.unsqueeze(1))
-        )
-
-        # Non-adjacent upper triangular pairs.
-        upper = torch.triu(
-            torch.ones(num_edges, num_edges, device=device, dtype=torch.bool),
-            diagonal=1,
-        )
-        candidate_mask = ~edge_adj & upper
-
-        # Spatial pre-filter: only check pairs whose midpoints are close.
+        # Pre-compute per-edge midpoints and half-lengths for spatial filter.
         mid = (positions[src] + positions[dst]) * 0.5  # (E, 2)
-        mid_dist = (mid.unsqueeze(0) - mid.unsqueeze(1)).norm(dim=-1)
-        # Also add edge half-lengths for conservative bound.
         half_len = (positions[dst] - positions[src]).norm(dim=-1) * 0.5
-        proximity_bound = half_len.unsqueeze(0) + half_len.unsqueeze(1) + self.proximity_threshold
-        candidate_mask = candidate_mask & (mid_dist < proximity_bound)
 
-        pair_idx = torch.where(candidate_mask)
-        if pair_idx[0].numel() == 0:
+        # Chunked pair finding to avoid O(N²) memory.
+        CHUNK = 4096
+        ei_list: list[torch.Tensor] = []
+        ej_list: list[torch.Tensor] = []
+        for start in range(0, num_edges, CHUNK):
+            end = min(start + CHUNK, num_edges)
+            chunk_src = src[start:end]  # (C,)
+            chunk_dst = dst[start:end]
+
+            # Edge adjacency: edges sharing a node (C, E)
+            edge_adj = (
+                (chunk_src.unsqueeze(1) == src.unsqueeze(0))
+                | (chunk_src.unsqueeze(1) == dst.unsqueeze(0))
+                | (chunk_dst.unsqueeze(1) == src.unsqueeze(0))
+                | (chunk_dst.unsqueeze(1) == dst.unsqueeze(0))
+            )
+
+            # Upper-triangular: col > row
+            row_idx = torch.arange(start, end, device=device).unsqueeze(1)
+            col_idx = torch.arange(num_edges, device=device).unsqueeze(0)
+            mask = ~edge_adj & (col_idx > row_idx)
+
+            # Spatial pre-filter: midpoint proximity
+            chunk_mid = mid[start:end]  # (C, 2)
+            md = (chunk_mid.unsqueeze(1) - mid.unsqueeze(0)).norm(dim=-1)
+            chunk_half = half_len[start:end]
+            prox = chunk_half.unsqueeze(1) + half_len.unsqueeze(0) + self.proximity_threshold
+            mask = mask & (md < prox)
+
+            ri, ci = torch.where(mask)
+            ei_list.append(ri + start)
+            ej_list.append(ci)
+
+        if not ei_list or sum(t.numel() for t in ei_list) == 0:
             return self._empty_result(device)
 
-        ei, ej = pair_idx
+        ei = torch.cat(ei_list)
+        ej = torch.cat(ej_list)
 
         # Differentiable segment-segment closest distance.
         min_dists = self._segment_distance(

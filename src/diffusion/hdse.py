@@ -348,14 +348,11 @@ class HDSE(nn.Module):
             d_model=d_model,
         )
 
-        # Fusion: project concatenation of pairwise encodings → scalar bias per head.
-        # SP and RW are (B, N, N, d_model), hierarchical is broadcast to pair-level.
-        # Total: 3 * d_model → n_heads.
-        self.bias_proj = nn.Sequential(
-            nn.Linear(3 * d_model, d_model),
-            nn.GELU(),
-            nn.Linear(d_model, n_heads),
-        )
+        # Fusion: project each pairwise encoding independently → sum → per-head bias.
+        # Avoids materializing the (B, N, N, 3*d_model) concatenation.
+        self.sp_proj = nn.Linear(d_model, n_heads)
+        self.rw_proj = nn.Linear(d_model, n_heads)
+        self.hier_proj = nn.Linear(d_model, n_heads)
 
         # Node-level projection for structural features.
         self.node_proj = nn.Linear(d_model, d_model)
@@ -386,15 +383,14 @@ class HDSE(nn.Module):
         # 3. Hierarchical level: (B, N, d_model).
         hier_node = self.hier_enc(adjacency, node_positions, node_mask)
 
-        # Broadcast hierarchical to pairwise: (B, N, N, d_model).
-        # Use sum of source and target level encodings for pair representation.
-        hier_i = hier_node.unsqueeze(2).expand_as(sp)  # (B, N, 1, d) → (B, N, N, d)
-        hier_j = hier_node.unsqueeze(1).expand_as(sp)  # (B, 1, N, d) → (B, N, N, d)
-        hier_pair = hier_i + hier_j
+        # 4. Fuse: project each encoding independently and sum → per-head bias.
+        # This avoids the (B, N, N, 3*d_model) concatenation that causes OOM.
+        bias = self.sp_proj(sp) + self.rw_proj(rw)  # (B, N, N, n_heads)
 
-        # 4. Fuse: concat → project → per-head scalar bias.
-        fused = torch.cat([sp, rw, hier_pair], dim=-1)  # (B, N, N, 3*d_model)
-        bias = self.bias_proj(fused)  # (B, N, N, n_heads)
+        # Add hierarchical: project node-level, then broadcast via outer sum.
+        hier_bias_i = self.hier_proj(hier_node)  # (B, N, n_heads)
+        bias = bias + hier_bias_i.unsqueeze(2) + hier_bias_i.unsqueeze(1)
+
         bias = bias.permute(0, 3, 1, 2)  # (B, n_heads, N, N)
 
         # Mask invalid pairs.

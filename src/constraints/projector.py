@@ -391,8 +391,8 @@ class GeometricProjector:
 
         src, dst = edge_index[0], edge_index[1]
 
-        # Chunked edge-adjacency detection to avoid O(E²) memory.
-        CHUNK = 4096
+        # Adaptive chunk: ~5 tensors of (C, E) per iter → target ~30 MB total.
+        CHUNK = max(1, min(4096, (1_500_000) // max(num_edges, 1)))
         ei_list: list[torch.Tensor] = []
         ej_list: list[torch.Tensor] = []
         for start in range(0, num_edges, CHUNK):
@@ -488,8 +488,8 @@ class GeometricProjector:
 
         angle_threshold = math.radians(self.config.ortho_tolerance_deg)
 
-        # Chunked parallel pair detection to avoid O(E²) memory.
-        CHUNK = 4096
+        # Adaptive chunk: keep each (C, E) tensor under ~32 MB.
+        CHUNK = max(1, min(4096, (8 * 1024 * 1024) // max(num_edges, 1)))
         ei_list: list[torch.Tensor] = []
         ej_list: list[torch.Tensor] = []
         for start in range(0, num_edges, CHUNK):

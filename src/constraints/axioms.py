@@ -341,8 +341,8 @@ class ParallelPairConstancyAxiom(Axiom):
         positions = node_positions.reshape(-1, 2) if node_positions.dim() == 3 else node_positions
 
         # Find parallel pairs: edges with similar angles.
-        # Chunked to avoid O(N²) memory — process rows in blocks.
-        CHUNK = 4096
+        # Adaptive chunk: keep each (chunk, E) tensor under ~32 MB.
+        CHUNK = max(1, min(4096, (8 * 1024 * 1024) // max(num_edges, 1)))
         ei_list: list[torch.Tensor] = []
         ej_list: list[torch.Tensor] = []
         for start in range(0, num_edges, CHUNK):
@@ -555,8 +555,9 @@ class SpatialNonIntersectionAxiom(Axiom):
         mid = (positions[src] + positions[dst]) * 0.5  # (E, 2)
         half_len = (positions[dst] - positions[src]).norm(dim=-1) * 0.5
 
-        # Chunked pair finding to avoid O(N²) memory.
-        CHUNK = 4096
+        # Adaptive chunk: NonIntersection creates ~5 tensors of (C, E) per iter,
+        # so target ~6 MB per tensor → ~30 MB total per iteration.
+        CHUNK = max(1, min(4096, (1_500_000) // max(num_edges, 1)))
         ei_list: list[torch.Tensor] = []
         ej_list: list[torch.Tensor] = []
         for start in range(0, num_edges, CHUNK):

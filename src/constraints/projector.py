@@ -391,25 +391,31 @@ class GeometricProjector:
 
         src, dst = edge_index[0], edge_index[1]
 
-        # Build edge adjacency (edges sharing a node).
-        edge_adj = (
-            (src.unsqueeze(0) == src.unsqueeze(1))
-            | (src.unsqueeze(0) == dst.unsqueeze(1))
-            | (dst.unsqueeze(0) == src.unsqueeze(1))
-            | (dst.unsqueeze(0) == dst.unsqueeze(1))
-        )
+        # Chunked edge-adjacency detection to avoid O(E²) memory.
+        CHUNK = 4096
+        ei_list: list[torch.Tensor] = []
+        ej_list: list[torch.Tensor] = []
+        for start in range(0, num_edges, CHUNK):
+            end = min(start + CHUNK, num_edges)
+            cs, cd = src[start:end], dst[start:end]
+            edge_adj = (
+                (cs.unsqueeze(1) == src.unsqueeze(0))
+                | (cs.unsqueeze(1) == dst.unsqueeze(0))
+                | (cd.unsqueeze(1) == src.unsqueeze(0))
+                | (cd.unsqueeze(1) == dst.unsqueeze(0))
+            )
+            row_idx = torch.arange(start, end, device=flat.device).unsqueeze(1)
+            col_idx = torch.arange(num_edges, device=flat.device).unsqueeze(0)
+            mask = ~edge_adj & (col_idx > row_idx)
+            ri, ci = torch.where(mask)
+            ei_list.append(ri + start)
+            ej_list.append(ci)
 
-        upper = torch.triu(
-            torch.ones(num_edges, num_edges, device=flat.device, dtype=torch.bool),
-            diagonal=1,
-        )
-        candidate_mask = ~edge_adj & upper
-
-        pair_idx = torch.where(candidate_mask)
-        if pair_idx[0].numel() == 0:
+        if not ei_list or sum(t.numel() for t in ei_list) == 0:
             return positions
 
-        ei, ej = pair_idx
+        ei = torch.cat(ei_list)
+        ej = torch.cat(ej_list)
 
         # Check intersection via parametric line-segment test.
         a1 = flat[src[ei]]
@@ -482,20 +488,27 @@ class GeometricProjector:
 
         angle_threshold = math.radians(self.config.ortho_tolerance_deg)
 
-        angle_diff = (angles.unsqueeze(0) - angles.unsqueeze(1)).abs()
-        angle_diff = torch.min(angle_diff, math.pi - angle_diff)
+        # Chunked parallel pair detection to avoid O(E²) memory.
+        CHUNK = 4096
+        ei_list: list[torch.Tensor] = []
+        ej_list: list[torch.Tensor] = []
+        for start in range(0, num_edges, CHUNK):
+            end = min(start + CHUNK, num_edges)
+            diff = (angles[start:end].unsqueeze(1) - angles.unsqueeze(0)).abs()
+            diff = torch.min(diff, math.pi - diff)
+            row_idx = torch.arange(start, end, device=device).unsqueeze(1)
+            col_idx = torch.arange(num_edges, device=device).unsqueeze(0)
+            mask = (diff < angle_threshold) & (col_idx > row_idx)
+            ri, ci = torch.where(mask)
+            ei_list.append(ri + start)
+            ej_list.append(ci)
 
-        upper = torch.triu(
-            torch.ones(num_edges, num_edges, device=device, dtype=torch.bool),
-            diagonal=1,
-        )
-        parallel_mask = (angle_diff < angle_threshold) & upper
-        pair_idx = torch.where(parallel_mask)
-
-        if pair_idx[0].numel() == 0:
+        if not ei_list or sum(t.numel() for t in ei_list) == 0:
             return node_positions
 
-        parallel_pairs = torch.stack([pair_idx[0], pair_idx[1]], dim=1)
+        parallel_pairs = torch.stack(
+            [torch.cat(ei_list), torch.cat(ej_list)], dim=1
+        )
         return self.snap_parallel_pairs(
             node_positions,
             parallel_pairs,

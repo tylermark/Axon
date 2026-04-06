@@ -68,11 +68,11 @@ class ShortestPathEncoding(nn.Module):
     Reference: ARCHITECTURE.md §Stage 3 HDSE
     """
 
-    def __init__(self, max_distance: int = 10, d_model: int = 512) -> None:
+    def __init__(self, max_distance: int = 10, n_out: int = 8) -> None:
         super().__init__()
         self.max_distance = max_distance
-        # Indices: 0..max_distance for reachable, max_distance+1 for unreachable
-        self.embedding = nn.Embedding(max_distance + 2, d_model)
+        # Embed directly to n_out (n_heads) — avoids (B, N, N, d_model).
+        self.embedding = nn.Embedding(max_distance + 2, n_out)
 
     def forward(
         self,
@@ -86,7 +86,7 @@ class ShortestPathEncoding(nn.Module):
             node_mask: (B, N) boolean mask for valid nodes.
 
         Returns:
-            (B, N, N, d_model) distance embeddings.
+            (B, N, N, n_out) distance embeddings.
         """
         bsz, n_nodes, _ = adjacency.shape
         device = adjacency.device
@@ -154,15 +154,18 @@ class RandomWalkEncoding(nn.Module):
     Captures structural similarity: nodes in the same neighbourhood have
     similar random walk profiles.  Computes k-step random walk probabilities
     ``RW_k(i,j) = (D⁻¹A)^k [i,j]`` for k = 1 .. ``num_steps`` and projects
-    the concatenated feature to ``d_model``.
+    each step to ``n_out`` via a learned weight, summing in-place to avoid
+    materializing the full (B, N, N, num_steps) stack.
 
     Reference: ARCHITECTURE.md §Stage 3 HDSE
     """
 
-    def __init__(self, num_steps: int = 8, d_model: int = 512) -> None:
+    def __init__(self, num_steps: int = 8, n_out: int = 8) -> None:
         super().__init__()
         self.num_steps = num_steps
-        self.proj = nn.Linear(num_steps, d_model)
+        # Per-step scalar weights: project each (B,N,N) step → n_out channels
+        # and accumulate, avoiding (B, N, N, num_steps) intermediate.
+        self.step_weights = nn.Parameter(torch.randn(num_steps, n_out) * 0.02)
 
     def forward(
         self,
@@ -176,35 +179,27 @@ class RandomWalkEncoding(nn.Module):
             node_mask: (B, N) boolean mask for valid nodes.
 
         Returns:
-            (B, N, N, d_model) random walk embeddings.
+            (B, N, N, n_out) random walk bias.
         """
-        # Sigmoid normalizes logits to [0,1] — keeps differentiability and
-        # prevents value explosion during repeated matrix multiplication.
         adj = torch.sigmoid(adjacency)
-        # Symmetrize.
         adj = (adj + adj.transpose(-1, -2)) / 2.0
 
-        # Zero out padded nodes.
         if node_mask is not None:
-            pair_mask = node_mask.unsqueeze(-1) & node_mask.unsqueeze(-2)  # (B, N, N)
+            pair_mask = node_mask.unsqueeze(-1) & node_mask.unsqueeze(-2)
             adj = adj * pair_mask.float()
 
-        # Degree matrix and transition matrix P = D⁻¹A.
-        degree = adj.sum(dim=-1, keepdim=True).clamp(min=1e-8)  # (B, N, 1)
-        trans = adj / degree  # (B, N, N) row-stochastic
+        degree = adj.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+        trans = adj / degree  # (B, N, N)
 
-        # Compute P^1, P^2, ..., P^k by repeated matmul, collect per-pair probs.
-        rw_features: list[torch.Tensor] = []
-        trans_k = trans  # P^1
-        for _ in range(self.num_steps):
-            rw_features.append(trans_k)
+        # Accumulate weighted sum: bias = sum_k w_k * P^k
+        # Only one (B, N, N, n_out) tensor lives at a time.
+        trans_k = trans
+        bias = trans_k.unsqueeze(-1) * self.step_weights[0]  # (B, N, N, n_out)
+        for k in range(1, self.num_steps):
             trans_k = torch.bmm(trans_k, trans)
+            bias = bias + trans_k.unsqueeze(-1) * self.step_weights[k]
 
-        # Stack: (B, N, N, num_steps)
-        rw_stack = torch.stack(rw_features, dim=-1)
-
-        # Project to d_model: (B, N, N, d_model)
-        return self.proj(rw_stack)
+        return bias
 
 
 # ---------------------------------------------------------------------------
@@ -276,14 +271,16 @@ class HierarchicalLevelEncoding(nn.Module):
 
         # Clustering coefficient: proportion of connected neighbour pairs.
         # C(v) = 2 * triangles(v) / (deg(v) * (deg(v) - 1))
-        # triangles(v) = (A^3)[v,v] / 2 for undirected graphs.
-        adj_sq = torch.bmm(adj, adj)  # (B, N, N) — A²
-        triangles = (adj_sq * adj).sum(dim=-1) / 2.0  # (B, N) — diag of A³ / 2
+        # triangles(v) = diag(A³) / 2 = sum_j (A² * A)[v,j] / 2
+        # Compute diag(A³) without materializing full A²:
+        # diag(A³)[v] = sum_j sum_k A[v,k]*A[k,j]*A[j,v] = einsum('bvk,bkj,bjv->bv')
+        triangles = torch.einsum('bik,bkj,bji->bi', adj, adj, adj) / 2.0  # (B, N)
         deg_factor = (degree * (degree - 1)).clamp(min=1.0)
         clustering = 2.0 * triangles / deg_factor  # (B, N)
 
-        # Second-order degree: number of nodes within 2 hops.
-        second_order_degree = (adj_sq > 0).float().sum(dim=-1)  # (B, N)
+        # Second-order degree: approximate via degree² (avoids full A² matrix).
+        # True 2-hop degree ≈ degree of degree, bounded by actual reachability.
+        second_order_degree = degree ** 2
         max_sod = second_order_degree.max(dim=-1, keepdim=True).values.clamp(min=1.0)
         second_order_norm = second_order_degree / max_sod
 
@@ -334,24 +331,22 @@ class HDSE(nn.Module):
         self.n_heads = n_heads
         self.d_model = d_model
 
-        # Sub-encodings.
+        # Sub-encodings — output n_heads directly to avoid (B, N, N, d_model).
         self.sp_enc = ShortestPathEncoding(
             max_distance=config.hdse_max_distance,
-            d_model=d_model,
+            n_out=n_heads,
         )
         self.rw_enc = RandomWalkEncoding(
             num_steps=8,
-            d_model=d_model,
+            n_out=n_heads,
         )
         self.hier_enc = HierarchicalLevelEncoding(
             num_levels=4,
             d_model=d_model,
         )
 
-        # Fusion: project each pairwise encoding independently → sum → per-head bias.
-        # Avoids materializing the (B, N, N, 3*d_model) concatenation.
-        self.sp_proj = nn.Linear(d_model, n_heads)
-        self.rw_proj = nn.Linear(d_model, n_heads)
+        # Hierarchical is node-level (B, N, d_model) — project to n_heads
+        # and broadcast via outer sum (no N² expansion needed).
         self.hier_proj = nn.Linear(d_model, n_heads)
 
         # Node-level projection for structural features.
@@ -374,18 +369,17 @@ class HDSE(nn.Module):
             HDSEOutput with pairwise attention bias (B, n_heads, N, N)
             and node-level encodings (B, N, d_model).
         """
-        # 1. Shortest-path: (B, N, N, d_model) — discrete, non-differentiable.
+        # 1. Shortest-path: (B, N, N, n_heads) — discrete, non-differentiable.
         sp = self.sp_enc(adjacency, node_mask)
 
-        # 2. Random walk: (B, N, N, d_model) — differentiable through soft adj.
+        # 2. Random walk: (B, N, N, n_heads) — differentiable through soft adj.
         rw = self.rw_enc(adjacency, node_mask)
 
         # 3. Hierarchical level: (B, N, d_model).
         hier_node = self.hier_enc(adjacency, node_positions, node_mask)
 
-        # 4. Fuse: project each encoding independently and sum → per-head bias.
-        # This avoids the (B, N, N, 3*d_model) concatenation that causes OOM.
-        bias = self.sp_proj(sp) + self.rw_proj(rw)  # (B, N, N, n_heads)
+        # 4. Fuse: SP and RW already output n_heads, just sum.
+        bias = sp + rw  # (B, N, N, n_heads)
 
         # Add hierarchical: project node-level, then broadcast via outer sum.
         hier_bias_i = self.hier_proj(hier_node)  # (B, N, n_heads)

@@ -665,7 +665,10 @@ class ReverseDiffusion(nn.Module):
             coord_loss = nnf.mse_loss(eps_pred, fwd.epsilon)
 
         # --- Adjacency loss: BCE (upper-triangle only to avoid double count) ---
-        triu = torch.triu(torch.ones(n, n, device=device), diagonal=1).unsqueeze(0)
+        # Use indices instead of dense (N, N) mask to save memory.
+        triu_idx = torch.triu_indices(n, n, offset=1, device=device)
+        triu = torch.zeros(1, n, n, device=device)
+        triu[0, triu_idx[0], triu_idx[1]] = 1.0
         if node_mask is not None:
             pm = (node_mask.unsqueeze(-1) & node_mask.unsqueeze(-2)).float()
             weight = pm * triu

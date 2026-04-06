@@ -362,21 +362,26 @@ def _extract_parallel_info(
 
     angle_threshold = math.radians(5.0)  # consistent with axiom default
 
-    # Pairwise angle difference, π-periodic.
-    angle_diff = (edge_angles.unsqueeze(0) - edge_angles.unsqueeze(1)).abs()
-    angle_diff = torch.min(angle_diff, math.pi - angle_diff)
+    # Chunked pairwise angle difference to avoid O(E²) memory.
+    CHUNK = 4096
+    ei_list: list[torch.Tensor] = []
+    ej_list: list[torch.Tensor] = []
+    for start in range(0, num_edges, CHUNK):
+        end = min(start + CHUNK, num_edges)
+        diff = (edge_angles[start:end].unsqueeze(1) - edge_angles.unsqueeze(0)).abs()
+        diff = torch.min(diff, math.pi - diff)
+        row_idx = torch.arange(start, end, device=device).unsqueeze(1)
+        col_idx = torch.arange(num_edges, device=device).unsqueeze(0)
+        mask = (diff < angle_threshold) & (col_idx > row_idx)
+        ri, ci = torch.where(mask)
+        ei_list.append(ri + start)
+        ej_list.append(ci)
 
-    upper = torch.triu(
-        torch.ones(num_edges, num_edges, device=device, dtype=torch.bool),
-        diagonal=1,
-    )
-    parallel_mask = (angle_diff < angle_threshold) & upper
-    pair_idx = torch.where(parallel_mask)
-
-    if pair_idx[0].numel() == 0:
+    if not ei_list or sum(t.numel() for t in ei_list) == 0:
         return None, None
 
-    ei, ej = pair_idx
+    ei = torch.cat(ei_list)
+    ej = torch.cat(ej_list)
     parallel_pairs = torch.stack([ei, ej], dim=1)  # (N_pairs, 2)
 
     # Wall thickness = perpendicular distance between parallel edges.

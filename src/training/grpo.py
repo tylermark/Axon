@@ -105,7 +105,7 @@ class GRPOConfig:
     gradient_clip: float = 1.0
     """Max gradient norm for clipping."""
 
-    num_workers: int = 4
+    num_workers: int = 0
     """DataLoader worker processes."""
 
     seed: int = 42

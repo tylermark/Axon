@@ -86,7 +86,8 @@ class MPMConfig:
     checkpoint_every: int = 10
     resume_from: str | None = None
     device: str = "auto"
-    num_workers: int = 4
+    num_workers: int = 0
+    chamfer_chunk_size: int = 8
     seed: int = 42
     wandb_project: str = "axon"
     wandb_run_name: str = ""
@@ -123,44 +124,37 @@ def _resolve_device(device_str: str) -> torch.device:
 # ---------------------------------------------------------------------------
 
 
-def chamfer_distance(
+def _chamfer_single_batch(
     pred: torch.Tensor,
     target: torch.Tensor,
-    mask: torch.Tensor | None = None,
+    mask: torch.Tensor | None,
 ) -> torch.Tensor:
-    """Symmetric Chamfer Distance between predicted and target point sets.
-
-    Operates on the 4D coordinate representation (x1, y1, x2, y2) so each
-    token is treated as a point in R^4.
+    """Chamfer Distance for a chunk of samples.
 
     Args:
-        pred: (B, N, D) predicted coordinates.
-        target: (B, N, D) ground-truth coordinates.
-        mask: (B, N) bool mask -- True for positions that contribute to loss.
+        pred: (C, N, D) predicted coordinates.
+        target: (C, N, D) ground-truth coordinates.
+        mask: (C, N) bool mask or None.
 
     Returns:
-        Scalar mean Chamfer Distance over the batch.
+        Scalar mean Chamfer Distance over C samples.
     """
-    # Pairwise L2 distance: (B, N, N)
-    diff = pred.unsqueeze(2) - target.unsqueeze(1)  # (B, N, N, D)
-    dists = (diff**2).sum(dim=-1)  # (B, N, N)
+    diff = pred.unsqueeze(2) - target.unsqueeze(1)  # (C, N, N, D)
+    dists = (diff**2).sum(dim=-1)  # (C, N, N)
 
     if mask is not None:
-        # Invalidate distances to/from padded positions.
-        inv_mask = ~mask  # (B, N)
+        inv_mask = ~mask
         large = 1e9
-        dists = dists + inv_mask.unsqueeze(1).float() * large  # mask target dim
-        dists = dists + inv_mask.unsqueeze(2).float() * large  # mask pred dim
+        dists = dists + inv_mask.unsqueeze(1).float() * large
+        dists = dists + inv_mask.unsqueeze(2).float() * large
 
-    # pred -> nearest target
-    forward_min = dists.min(dim=2).values  # (B, N)
-    # target -> nearest pred
-    backward_min = dists.min(dim=1).values  # (B, N)
+    forward_min = dists.min(dim=2).values  # (C, N)
+    backward_min = dists.min(dim=1).values  # (C, N)
 
     if mask is not None:
         forward_min = forward_min * mask.float()
         backward_min = backward_min * mask.float()
-        n_valid = mask.float().sum(dim=1).clamp(min=1.0)  # (B,)
+        n_valid = mask.float().sum(dim=1).clamp(min=1.0)
         forward_loss = (forward_min.sum(dim=1) / n_valid).mean()
         backward_loss = (backward_min.sum(dim=1) / n_valid).mean()
     else:
@@ -168,6 +162,49 @@ def chamfer_distance(
         backward_loss = backward_min.mean()
 
     return (forward_loss + backward_loss) / 2.0
+
+
+def chamfer_distance(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor | None = None,
+    chunk_size: int = 1,
+) -> torch.Tensor:
+    """Symmetric Chamfer Distance between predicted and target point sets.
+
+    Operates on the 4D coordinate representation (x1, y1, x2, y2) so each
+    token is treated as a point in R^4.
+
+    The naive (B, N, N, D) materialization uses B * N^2 * D * 4 bytes of
+    VRAM — at B=64, N=2048 that is ~4.3 GB before gradients.  ``chunk_size``
+    caps the batch dimension of each pairwise computation so peak memory is
+    ``chunk_size * N^2 * D * 4`` bytes.  The result is numerically identical
+    to the full-batch form (weighted mean across chunks).
+
+    Args:
+        pred: (B, N, D) predicted coordinates.
+        target: (B, N, D) ground-truth coordinates.
+        mask: (B, N) bool mask -- True for positions that contribute to loss.
+        chunk_size: Number of samples per chunk.  Default 1 gives a peak
+            intermediate of (1, N, N, D) ≈ 67 MB at N=2048, D=4.
+
+    Returns:
+        Scalar mean Chamfer Distance over the batch.
+    """
+    B = pred.shape[0]
+    if chunk_size >= B:
+        return _chamfer_single_batch(pred, target, mask)
+
+    total = torch.tensor(0.0, device=pred.device, dtype=pred.dtype)
+    for start in range(0, B, chunk_size):
+        end = min(start + chunk_size, B)
+        chunk_loss = _chamfer_single_batch(
+            pred[start:end],
+            target[start:end],
+            mask[start:end] if mask is not None else None,
+        )
+        total = total + chunk_loss * (end - start)
+    return total / B
 
 
 # ---------------------------------------------------------------------------
@@ -474,6 +511,7 @@ class MPMPreTrainer:
                 coord_pred,
                 target_coords,
                 mask=mask_indices,
+                chunk_size=self.config.chamfer_chunk_size,
             )
 
             # --- Entity type loss (optional cross-entropy) ---

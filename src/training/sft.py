@@ -101,7 +101,7 @@ class SFTConfig:
     save_every_n_epochs: int = 5
     """Save checkpoint every N epochs."""
 
-    num_workers: int = 4
+    num_workers: int = 0
     """DataLoader worker processes."""
 
     seed: int = 42
@@ -713,6 +713,34 @@ class SFTTrainer:
         torch.save(checkpoint, path)
         logger.info("Checkpoint saved: %s", path)
         return path
+
+    @staticmethod
+    def find_checkpoint(checkpoint_dir: str | Path) -> Path | None:
+        """Return the path to the best available SFT checkpoint.
+
+        Checks in priority order: ``best.pt`` → ``final.pt`` → latest
+        ``epoch_NNNN.pt``.  Returns ``None`` when the directory does not
+        exist or contains no recognised checkpoint files.
+
+        This is the intended API for downstream stages (e.g. GRPO) that need
+        to locate the SFT output without coupling to internal filename
+        conventions.
+
+        Args:
+            checkpoint_dir: Directory passed to SFTConfig.checkpoint_dir.
+
+        Returns:
+            Path to a checkpoint file, or None if none found.
+        """
+        d = Path(checkpoint_dir)
+        if not d.exists():
+            return None
+        for name in ("best.pt", "final.pt"):
+            p = d / name
+            if p.exists():
+                return p
+        epoch_files = sorted(d.glob("epoch_*.pt"))
+        return epoch_files[-1] if epoch_files else None
 
     def load_checkpoint(self, path: str | Path) -> None:
         """Resume training from a checkpoint.

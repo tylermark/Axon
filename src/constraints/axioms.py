@@ -63,9 +63,13 @@ def find_parallel_pairs(
             torch.empty(0, dtype=torch.long, device=device),
         )
 
-    # Sort edges by angle; work on CPU for the scan loop.
+    # Sort edges by angle; materialise as plain Python lists to avoid per-element
+    # .item() tensor round-trips inside the scan loops.
     sorted_order = torch.argsort(angles)
-    sorted_angles = angles[sorted_order].cpu()
+    # NOTE(constrain): .tolist() moves the whole tensor to CPU once, so the inner
+    # loops use pure Python float/int arithmetic — no tensor overhead per iteration.
+    sorted_angles_list: list[float] = angles[sorted_order].tolist()
+    sorted_order_list: list[int] = sorted_order.tolist()
 
     ei_list: list[tuple[int, int]] = []
 
@@ -73,10 +77,10 @@ def find_parallel_pairs(
     for i in range(num_edges):
         j = i + 1
         while j < num_edges:
-            diff = abs(sorted_angles[j].item() - sorted_angles[i].item())
+            diff = abs(sorted_angles_list[j] - sorted_angles_list[i])
             if diff > threshold:
                 break
-            ei_list.append((sorted_order[i].item(), sorted_order[j].item()))
+            ei_list.append((sorted_order_list[i], sorted_order_list[j]))
             j += 1
 
     # Also handle wraparound: edges near 0 and near π are parallel.
@@ -88,24 +92,23 @@ def find_parallel_pairs(
         i = num_edges - 1
         j = 0
         while j < i:
-            diff = math.pi - sorted_angles[i].item() + sorted_angles[j].item()
+            diff = math.pi - sorted_angles_list[i] + sorted_angles_list[j]
             if diff > threshold:
                 break
-            ei_list.append((sorted_order[i].item(), sorted_order[j].item()))
+            ei_list.append((sorted_order_list[i], sorted_order_list[j]))
             j += 1
         # Scan backward from the end for other near-π edges too.
+        # NOTE(constrain): duplicate pairs are harmless — torch.unique at the end
+        # deduplicates everything, so the O(P) `pair not in ei_list` guard is removed.
         for i in range(num_edges - 2, -1, -1):
-            if math.pi - sorted_angles[i].item() > threshold:
+            if math.pi - sorted_angles_list[i] > threshold:
                 break
             j = 0
             while j < i:
-                diff = math.pi - sorted_angles[i].item() + sorted_angles[j].item()
+                diff = math.pi - sorted_angles_list[i] + sorted_angles_list[j]
                 if diff > threshold:
                     break
-                # Avoid duplicates from the first wraparound scan.
-                pair = (sorted_order[i].item(), sorted_order[j].item())
-                if pair not in ei_list:  # Small set for wraparound
-                    ei_list.append(pair)
+                ei_list.append((sorted_order_list[i], sorted_order_list[j]))
                 j += 1
 
     if not ei_list:

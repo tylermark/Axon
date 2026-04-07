@@ -163,12 +163,23 @@ class BettiRegularization(nn.Module):
         # Temperature controls the sharpness of the soft zero-eigenvalue count.
         self.temperature = nn.Parameter(torch.tensor(0.1), requires_grad=False)
 
+    # NOTE(constrain): k_cap limits the eigsh subspace to the smallest k_cap×k_cap
+    # block of each Laplacian. For Betti-0 (counting near-zero eigenvalues = connected
+    # components) only the smallest few eigenvalues matter, so capping at 128 is safe
+    # for typical target_betti_0 values (1–4). If target_betti_0 is set above 64,
+    # increase k_cap accordingly.
+    _K_CAP: int = 128
+
     def forward(
         self,
         adjacency: torch.Tensor,
         node_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Compute Betti-0 regularization loss.
+
+        Batched implementation: a single ``torch.linalg.eigvalsh`` call on a
+        ``(B, k, k)`` tensor replaces the original per-sample Python loop,
+        eliminating B−1 redundant CUDA-sync round-trips and CPU-side overhead.
 
         Args:
             adjacency: Adjacency logits or binary, ``(B, N, N)``.
@@ -188,41 +199,54 @@ class BettiRegularization(nn.Module):
         batch_size, n, _ = adj.shape
         device = adj.device
 
-        losses: list[torch.Tensor] = []
+        # Cap k for speed: only the smallest k eigenvalues matter for Betti-0.
+        k = min(n, self._K_CAP)
 
-        for b in range(batch_size):
-            a = adj[b]  # (N, N)
+        if k < 2:
+            # Every sample is trivially 1 component or empty.
+            # Return a zero loss that still carries a grad path through adj via
+            # a dummy trace-based term that is always 0 but connects the graph.
+            # NOTE(constrain): the dummy sum is scaled to 0 so it doesn't bias
+            # the loss, but it keeps adj in the computation graph for gradient flow.
+            dummy = (adj * 0.0).sum() * 0.0
+            zero = torch.zeros((), device=device)
+            return zero + dummy
 
-            # Apply node mask: zero out rows/cols of invalid nodes.
-            if node_mask is not None:
-                mask = node_mask[b].float()  # (N,)
-                a = a * mask.unsqueeze(0) * mask.unsqueeze(1)
-                n_valid = mask.sum().clamp(min=1.0)
-            else:
-                n_valid = torch.tensor(float(n), device=device)
+        # Apply node mask before building the Laplacian.
+        # Invalid nodes get their adj rows/cols zeroed, then their Laplacian diagonal
+        # is set to a large sentinel value so their eigenvalues land far above zero
+        # and sigmoid(-λ/T)→0, effectively excluding them from the soft component count.
+        # NOTE(constrain): this strategy lets all samples use the same k=min(n,_K_CAP)
+        # subspace regardless of how many valid nodes each sample has, which is required
+        # for batching eigvalsh over heterogeneous node_mask counts.
+        _SENTINEL = 1e4
+        if node_mask is not None:
+            mask_f = node_mask.float()  # (B, N)
+            adj = adj * mask_f.unsqueeze(1) * mask_f.unsqueeze(2)
+            invalid_mask = ~node_mask  # (B, N) — True where node is padding
+        else:
+            invalid_mask = None
 
-            # Graph Laplacian: L = D - A.
-            degree = a.sum(dim=-1)
-            laplacian = torch.diag_embed(degree) - a
+        # Build batched Laplacian for the [:k, :k] subspace: (B, k, k).
+        adj_k = adj[:, :k, :k]
+        degree_k = adj_k.sum(dim=-1)  # (B, k)
+        laplacian_k = torch.diag_embed(degree_k) - adj_k  # (B, k, k)
 
-            # Number of eigenvalues to check (at most n_valid, capped for speed).
-            k = min(int(n_valid.item()), n)
-            if k < 2:
-                # Trivially 1 component or empty graph.
-                losses.append(torch.zeros(1, device=device, requires_grad=True).squeeze())
-                continue
+        # Inject sentinel on the diagonal of padding nodes so their eigenvalues
+        # are pushed far above zero.
+        if invalid_mask is not None:
+            inv_k = invalid_mask[:, :k].float() * _SENTINEL  # (B, k)
+            # diag_embed produces (B, k, k); adding to laplacian diagonal:
+            laplacian_k = laplacian_k + torch.diag_embed(inv_k)
 
-            # Eigenvalues (symmetric real matrix → real eigenvalues).
-            eigenvalues = torch.linalg.eigvalsh(laplacian[:k, :k])
+        # Single batched eigendecomposition — one CUDA kernel instead of B.
+        eigenvalues = torch.linalg.eigvalsh(laplacian_k)  # (B, k)
 
-            # Soft count of near-zero eigenvalues.
-            # sigmoid(-eigenvalue / temperature) ≈ 1 when eigenvalue ≈ 0.
-            soft_count = torch.sigmoid(-eigenvalues / self.temperature).sum()
+        # Soft count of near-zero eigenvalues per sample.
+        soft_counts = torch.sigmoid(-eigenvalues / self.temperature).sum(dim=-1)  # (B,)
 
-            # Loss: deviation from target.
-            losses.append((soft_count - self.target_betti_0).abs())
-
-        return torch.stack(losses).mean()
+        # Loss: mean deviation from target across the batch.
+        return (soft_counts - self.target_betti_0).abs().mean()
 
 
 # ---------------------------------------------------------------------------

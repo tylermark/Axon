@@ -18,7 +18,6 @@ Reference:
 
 from __future__ import annotations
 
-from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -91,54 +90,60 @@ class ShortestPathEncoding(nn.Module):
         bsz, n_nodes, _ = adjacency.shape
         device = adjacency.device
 
-        # Threshold to binary for BFS (handles soft adjacency during denoising).
-        adj_binary = (adjacency > 0.5).float()
-        # Symmetrize.
-        adj_binary = torch.clamp(adj_binary + adj_binary.transpose(-1, -2), max=1.0)
+        # Threshold to binary and symmetrize — handles soft adjacency during denoising.
+        # Distances are non-differentiable; gradient only flows through self.embedding.
+        with torch.no_grad():
+            adj_bin = (adjacency.detach() > 0.5)
+            adj_sym = adj_bin | adj_bin.transpose(-1, -2)  # (B, N, N) bool
 
-        # BFS on CPU for each graph — integer shortest paths are non-differentiable
-        # anyway, so this doesn't break gradient flow.
-        adj_np = adj_binary.detach().cpu()
-        dist_indices = torch.full(
-            (bsz, n_nodes, n_nodes),
-            self.max_distance + 1,
-            dtype=torch.long,
-            device=device,
-        )
+            # Zero out edges touching invalid nodes.
+            if node_mask is not None:
+                pair_valid = node_mask.unsqueeze(-1) & node_mask.unsqueeze(-2)  # (B,N,N)
+                adj_sym = adj_sym & pair_valid
 
-        for b in range(bsz):
-            mask_b = node_mask[b] if node_mask is not None else None
-            n_valid = int(mask_b.sum().item()) if mask_b is not None else n_nodes
-            adj_b = adj_np[b]
+            adj_float = adj_sym.float()  # stays on device — no CPU transfer
 
-            # Build adjacency list for BFS efficiency.
-            neighbors: list[list[int]] = [[] for _ in range(n_valid)]
-            for i in range(n_valid):
-                for j in range(i + 1, n_valid):
-                    if adj_b[i, j] > 0.5:
-                        neighbors[i].append(j)
-                        neighbors[j].append(i)
+            # ----------------------------------------------------------------
+            # Vectorized bounded shortest-path via repeated batched mat-mul.
+            #
+            # reach_k[b,i,j] = True iff there is a path of length ≤k from i to j.
+            # frontier_k = reach_k \ reach_{k-1}: pairs first reached at exactly k.
+            # We assign dist = k to the frontier at each step.
+            #
+            # Complexity: O(max_distance * B * N²) float ops — fully on-device,
+            # no per-element host↔device transfers, no Python BFS loops.
+            # ----------------------------------------------------------------
+            UNREACHABLE = self.max_distance + 1
 
-            # BFS from each valid node.
-            for src in range(n_valid):
-                dists = [-1] * n_valid
-                dists[src] = 0
-                queue: deque[int] = deque([src])
-                while queue:
-                    u = queue.popleft()
-                    if dists[u] >= self.max_distance:
-                        continue
-                    for v in neighbors[u]:
-                        if dists[v] == -1:
-                            dists[v] = dists[u] + 1
-                            queue.append(v)
+            dist_indices = torch.full(
+                (bsz, n_nodes, n_nodes),
+                UNREACHABLE,
+                dtype=torch.long,
+                device=device,
+            )
 
-                for tgt in range(n_valid):
-                    d = dists[tgt]
-                    if d == -1:
-                        dist_indices[b, src, tgt] = self.max_distance + 1
-                    else:
-                        dist_indices[b, src, tgt] = min(d, self.max_distance)
+            # k=0: every node is distance 0 from itself.
+            eye = torch.eye(n_nodes, dtype=torch.bool, device=device).unsqueeze(0)
+            dist_indices[eye.expand(bsz, -1, -1)] = 0
+
+            reach_k = eye.expand(bsz, -1, -1).clone()  # (B, N, N) bool
+
+            for k in range(1, self.max_distance + 1):
+                # Expand frontier by one hop.
+                # NOTE(diffuse): float32 bmm is used instead of bool matmul because
+                # bool bmm is not fused on all backends; float is reliably fast on
+                # both CUDA and CPU. The >0 threshold converts back to bool.
+                reach_next = (torch.bmm(reach_k.float(), adj_float) > 0) | reach_k
+                frontier = reach_next & ~reach_k  # pairs first reached at step k
+                dist_indices[frontier] = k
+                reach_k = reach_next
+
+            # Invalidate any pair touching a masked-out node (row or column).
+            # This overwrites any erroneous distances assigned via adj_sym masking
+            # above, ensuring invalid nodes are always UNREACHABLE in the output.
+            if node_mask is not None:
+                invalid = ~(node_mask.unsqueeze(-1) & node_mask.unsqueeze(-2))
+                dist_indices[invalid] = UNREACHABLE
 
         return self.embedding(dist_indices)
 

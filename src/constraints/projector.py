@@ -393,8 +393,17 @@ class GeometricProjector:
 
         src, dst = edge_index[0], edge_index[1]
 
-        # Find nearby non-adjacent edge pairs via spatial bucketing — O(E).
-        ei, ej = find_nearby_edge_pairs(edge_index, flat, 0.15)
+        # Recover per-edge batch membership BEFORE flattening. Same rationale
+        # as SpatialNonIntersectionAxiom.forward — without this, nearby-pair
+        # detection conflates edges from different batch items that share
+        # the normalised [0, 1] coordinate frame.
+        batch_index: torch.Tensor | None = None
+        if node_positions.dim() == 3:
+            n_per_batch = node_positions.shape[1]
+            batch_index = edge_index[0] // n_per_batch
+
+        # Find nearby non-adjacent edge pairs — vectorised on-device.
+        ei, ej = find_nearby_edge_pairs(edge_index, flat, 0.15, batch_index=batch_index)
         if ei.numel() == 0:
             return positions
 

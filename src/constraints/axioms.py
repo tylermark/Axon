@@ -133,21 +133,31 @@ def find_nearby_edge_pairs(
     edge_index: torch.Tensor,
     positions: torch.Tensor,
     proximity_threshold: float,
+    batch_index: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Find non-adjacent edge pairs whose midpoints are within proximity.
 
-    Uses spatial bucketing: O(E) expected time and memory.
+    Fully vectorised on the input device: computes pairwise midpoint
+    distances in row-chunks bounded by ``_TARGET_CHUNK_MEM`` bytes. No
+    Python loops over edges, no CPU syncs.
+
+    For batched inputs where ``positions`` and ``edge_index`` span multiple
+    samples (see :func:`edges_from_adjacency`), pass ``batch_index`` to
+    restrict pair generation to same-batch pairs. This matters both for
+    correctness (avoids spurious cross-batch intersection losses) and for
+    performance (keeps the candidate set small).
 
     Args:
         edge_index: ``(2, E)`` COO.
         positions: ``(N, 2)`` node positions (flat).
         proximity_threshold: Distance threshold for candidate pairs.
+        batch_index: Optional ``(E,)`` batch membership per edge. When
+            provided, cross-batch pairs are excluded.
 
     Returns:
         ``(ei, ej)`` — edge indices of nearby non-adjacent pairs (ei < ej).
     """
     device = positions.device
-    src, dst = edge_index[0], edge_index[1]
     num_edges = edge_index.shape[1]
 
     if num_edges < 2:
@@ -156,82 +166,78 @@ def find_nearby_edge_pairs(
             torch.empty(0, dtype=torch.long, device=device),
         )
 
+    src, dst = edge_index[0], edge_index[1]
     mid = (positions[src] + positions[dst]) * 0.5  # (E, 2)
-    half_len = (positions[dst] - positions[src]).norm(dim=-1) * 0.5
-    max_reach = half_len + proximity_threshold  # (E,)
+    half_len = (positions[dst] - positions[src]).norm(dim=-1) * 0.5  # (E,)
 
-    # Bucket size = 2 * max(max_reach) to ensure nearby edges share a bucket
-    # or adjacent bucket.
-    bucket_size = float((2.0 * max_reach.max()).item())
-    if bucket_size < 1e-6:
-        bucket_size = 1.0
+    # Adaptive row-chunking to bound peak memory.
+    # A row chunk of size K allocates (K, E, 2) floats for `diff` plus a
+    # few (K, E) scratch tensors — ~K * E * 20 bytes peak. Cap per chunk
+    # at _TARGET_CHUNK_MEM so the full function stays within a predictable
+    # memory budget regardless of E.
+    _TARGET_CHUNK_MEM = 256 * 1024 * 1024  # 256 MB
+    chunk_size = max(1, _TARGET_CHUNK_MEM // max(num_edges * 20, 1))
+    chunk_size = min(chunk_size, num_edges)
 
-    # Assign each edge to a 2D grid bucket (on CPU for dict operations).
-    mid_cpu = mid.cpu()
-    bx = (mid_cpu[:, 0] / bucket_size).long()
-    by = (mid_cpu[:, 1] / bucket_size).long()
+    all_col = torch.arange(num_edges, device=device)
 
-    # Build bucket → edge list mapping.
-    buckets: dict[tuple[int, int], list[int]] = {}
-    for e in range(num_edges):
-        key = (bx[e].item(), by[e].item())
-        if key not in buckets:
-            buckets[key] = []
-        buckets[key].append(e)
+    ei_parts: list[torch.Tensor] = []
+    ej_parts: list[torch.Tensor] = []
 
-    # Build node → edge set for adjacency check.
-    src_cpu = src.cpu().tolist()
-    dst_cpu = dst.cpu().tolist()
-    node_to_edges: dict[int, set[int]] = {}
-    for e in range(num_edges):
-        for n in (src_cpu[e], dst_cpu[e]):
-            if n not in node_to_edges:
-                node_to_edges[n] = set()
-            node_to_edges[n].add(e)
+    for s in range(0, num_edges, chunk_size):
+        e = min(s + chunk_size, num_edges)
 
-    # Check pairs within same and neighboring buckets.
-    mid_np = mid_cpu.numpy()
-    half_len_cpu = half_len.cpu().numpy()
-    ei_pairs: list[tuple[int, int]] = []
+        # Pairwise midpoint distance for rows [s, e) vs all columns.
+        diff = mid[s:e].unsqueeze(1) - mid.unsqueeze(0)      # (K, E, 2)
+        dist = diff.norm(dim=-1)                              # (K, E)
 
-    visited_buckets: set[tuple[int, int]] = set()
-    for (gx, gy), edges in buckets.items():
-        visited_buckets.add((gx, gy))
-        # Check all 9 neighboring cells (including self).
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
-                neighbor_key = (gx + dx, gy + dy)
-                if neighbor_key not in buckets:
-                    continue
-                # For self-bucket, check internal pairs. For others,
-                # only check if we haven't visited the neighbor yet
-                # (to avoid double-counting).
-                if neighbor_key in visited_buckets and neighbor_key != (gx, gy):
-                    continue
-                other_edges = buckets[neighbor_key]
-                for e1 in edges:
-                    for e2 in other_edges:
-                        if e1 >= e2:
-                            continue
-                        # Check adjacency: edges sharing a node.
-                        nodes_e1 = {src_cpu[e1], dst_cpu[e1]}
-                        nodes_e2 = {src_cpu[e2], dst_cpu[e2]}
-                        if nodes_e1 & nodes_e2:
-                            continue
-                        # Check proximity.
-                        d = ((mid_np[e1] - mid_np[e2]) ** 2).sum() ** 0.5
-                        reach = half_len_cpu[e1] + half_len_cpu[e2] + proximity_threshold
-                        if d < reach:
-                            ei_pairs.append((e1, e2))
+        # Proximity reach: two segments can come within `proximity_threshold`
+        # only if their midpoints are within (half_len_i + half_len_j +
+        # proximity_threshold). This is a necessary (not sufficient)
+        # condition — the downstream segment-segment test filters further.
+        reach = (
+            half_len[s:e].unsqueeze(1)
+            + half_len.unsqueeze(0)
+            + proximity_threshold
+        )
+        nearby = dist < reach  # (K, E)
 
-    if not ei_pairs:
+        # Keep only upper-triangular pairs (global row index < col index).
+        row_global = torch.arange(s, e, device=device).unsqueeze(1)  # (K, 1)
+        nearby = nearby & (all_col.unsqueeze(0) > row_global)
+
+        # Same-batch filter (excludes cross-batch pairs).
+        if batch_index is not None:
+            nearby = nearby & (
+                batch_index[s:e].unsqueeze(1) == batch_index.unsqueeze(0)
+            )
+
+        # Exclude adjacent edges (sharing a node).
+        src_i = src[s:e].unsqueeze(1)   # (K, 1)
+        dst_i = dst[s:e].unsqueeze(1)
+        src_j = src.unsqueeze(0)        # (1, E)
+        dst_j = dst.unsqueeze(0)
+        shares = (
+            (src_i == src_j)
+            | (src_i == dst_j)
+            | (dst_i == src_j)
+            | (dst_i == dst_j)
+        )
+        nearby = nearby & ~shares
+
+        # Gather surviving pair indices within this chunk.
+        rows, cols = torch.where(nearby)
+        if rows.numel() > 0:
+            ei_parts.append(rows + s)
+            ej_parts.append(cols)
+
+    if not ei_parts:
         return (
             torch.empty(0, dtype=torch.long, device=device),
             torch.empty(0, dtype=torch.long, device=device),
         )
 
-    pairs = torch.tensor(ei_pairs, dtype=torch.long, device=device)
-    return pairs[:, 0], pairs[:, 1]
+    return torch.cat(ei_parts), torch.cat(ej_parts)
 
 
 def compute_edge_directions(
@@ -723,12 +729,30 @@ class SpatialNonIntersectionAxiom(Axiom):
         if num_edges < 2:
             return self._empty_result(device)
 
-        positions = node_positions.reshape(-1, 2) if node_positions.dim() == 3 else node_positions
+        # Recover per-edge batch membership BEFORE flattening positions.
+        # edges_from_adjacency returns flat indices with stride N per batch
+        # item, so batch_index[e] = edge_index[0, e] // N. Without this
+        # filter, cross-batch pairs are considered "nearby" in the shared
+        # normalised [0, 1] coordinate frame, producing a spurious O(B²·E²)
+        # candidate set.
+        batch_index: torch.Tensor | None = None
+        if node_positions.dim() == 3:
+            n_per_batch = node_positions.shape[1]
+            positions = node_positions.reshape(-1, 2)
+            batch_index = edge_index[0] // n_per_batch
+        else:
+            positions = node_positions
 
         src, dst = edge_index[0], edge_index[1]
 
-        # Find nearby non-adjacent edge pairs via spatial bucketing — O(E).
-        ei, ej = find_nearby_edge_pairs(edge_index, positions, self.proximity_threshold)
+        # Find nearby non-adjacent edge pairs on-device — vectorised O(E²)
+        # in chunks, with same-batch filtering via `batch_index`.
+        ei, ej = find_nearby_edge_pairs(
+            edge_index,
+            positions,
+            self.proximity_threshold,
+            batch_index=batch_index,
+        )
         if ei.numel() == 0:
             return self._empty_result(device)
 

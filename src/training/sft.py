@@ -21,6 +21,7 @@ Reference:
 from __future__ import annotations
 
 import logging
+import resource
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,6 +34,20 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader, Dataset
 
 from src.constraints.axioms import edges_from_adjacency
+
+
+def _host_rss_gb() -> float:
+    """Return the current process's resident host RAM in GB (Linux/macOS).
+
+    Uses ``resource.getrusage`` so it works without an extra dep like
+    psutil. On Linux ``ru_maxrss`` is returned in kilobytes; on macOS it
+    is in bytes. We detect the unit by checking the platform.
+    """
+    rss_raw = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    import sys
+    if sys.platform == "darwin":
+        return rss_raw / (1024 ** 3)
+    return rss_raw / (1024 ** 2)  # Linux: kilobytes → GB
 
 if TYPE_CHECKING:
     from src.diffusion.reverse import DiffusionLoss, GraphDiffusionModel
@@ -173,24 +188,27 @@ class _StepTimer:
         self._t = now
 
         short = name.replace("time/", "").replace("_s", "")
+        host_gb = _host_rss_gb()
         if self.device.type == "cuda":
             alloc_gb = torch.cuda.memory_allocated() / 1e9
             peak_gb = torch.cuda.max_memory_allocated() / 1e9
             logger.info(
-                "step %s   %-22s  %7.0f ms   alloc=%5.2fGB   peak=%5.2fGB",
+                "step %s   %-22s  %7.0f ms   gpu_alloc=%5.2fGB   gpu_peak=%5.2fGB   host_rss=%5.2fGB",
                 "?" if self._step_idx is None else str(self._step_idx),
                 short,
                 dt * 1000,
                 alloc_gb,
                 peak_gb,
+                host_gb,
             )
             torch.cuda.reset_peak_memory_stats()
         else:
             logger.info(
-                "step %s   %-22s  %7.0f ms",
+                "step %s   %-22s  %7.0f ms   host_rss=%5.2fGB",
                 "?" if self._step_idx is None else str(self._step_idx),
                 short,
                 dt * 1000,
+                host_gb,
             )
 
 
@@ -756,6 +774,8 @@ class SFTTrainer:
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(self.config.seed)
 
+        logger.info("host_rss before training: %.2f GB", _host_rss_gb())
+
         for epoch in range(self.current_epoch, self.config.num_epochs):
             self.current_epoch = epoch
             epoch_start = time.monotonic()
@@ -763,7 +783,7 @@ class SFTTrainer:
             # Train
             train_metrics = self.train_epoch()
             logger.info(
-                "Epoch %d/%d  loss=%.4f  diff=%.4f  constr=%.4f  lr=%.2e  (%.1fs)",
+                "Epoch %d/%d  loss=%.4f  diff=%.4f  constr=%.4f  lr=%.2e  (%.1fs)  host_rss=%.2fGB",
                 epoch + 1,
                 self.config.num_epochs,
                 train_metrics.get("loss/total", 0.0),
@@ -771,11 +791,23 @@ class SFTTrainer:
                 train_metrics.get("loss/constraint", 0.0),
                 train_metrics.get("lr", 0.0),
                 time.monotonic() - epoch_start,
+                _host_rss_gb(),
             )
 
             # Evaluate
             if (epoch + 1) % self.config.eval_every_n_epochs == 0:
+                logger.info(
+                    "Eval start (epoch %d)  host_rss=%.2fGB",
+                    epoch + 1,
+                    _host_rss_gb(),
+                )
+                eval_start = time.monotonic()
                 eval_metrics = self.evaluate()
+                logger.info(
+                    "Eval done  (%.1fs)  host_rss=%.2fGB",
+                    time.monotonic() - eval_start,
+                    _host_rss_gb(),
+                )
                 eval_loss = eval_metrics.get("eval/loss/total", float("inf"))
                 if eval_loss < self.best_eval_loss:
                     self.best_eval_loss = eval_loss

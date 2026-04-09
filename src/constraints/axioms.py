@@ -96,6 +96,32 @@ def find_parallel_pairs(
         chunk_size = max(1, _TARGET_CHUNK_MEM // max(num_edges * 5, 1))
         chunk_size = min(chunk_size, num_edges)
 
+        # NOTE(constrain): pre-``torch.where`` Bernoulli subsampling. The
+        # pathological OOM came from accumulating ``torch.where(parallel)``
+        # outputs across chunks into a multi-billion-element Python list
+        # before the end-of-function cap had a chance to trim it. The fix
+        # is to AND ``parallel`` with a Bernoulli mask at rate
+        # ``max_pairs * _OVERSAMPLE / U`` inside each chunk, where U is the
+        # upper bound on the full enumeration (E choose 2). This bounds
+        # the accumulated output to ~``_OVERSAMPLE * max_pairs`` in
+        # expectation. The final trim then uniformly samples down to
+        # exactly ``max_pairs``.
+        #
+        # Composition of Bernoulli sampling at rate p followed by uniform
+        # subsampling of size ``max_pairs`` gives each pair an equal
+        # marginal probability of landing in the final sample, so the
+        # downstream mean-of-losses estimate stays unbiased.
+        _OVERSAMPLE = 4
+        upper_bound = (num_edges * (num_edges - 1)) // 2
+        if (
+            max_pairs is not None
+            and max_pairs > 0
+            and upper_bound > max_pairs * _OVERSAMPLE
+        ):
+            sample_rate = (max_pairs * _OVERSAMPLE) / upper_bound
+        else:
+            sample_rate = 1.0
+
         ei_parts: list[torch.Tensor] = []
         ej_parts: list[torch.Tensor] = []
         all_cols = torch.arange(num_edges, device=device)
@@ -116,6 +142,11 @@ def find_parallel_pairs(
             row_global = torch.arange(s, e, device=device).unsqueeze(1)  # (K, 1)
             parallel = parallel & (all_cols.unsqueeze(0) > row_global)
 
+            # Bernoulli pre-``torch.where`` mask (no-op when sample_rate == 1).
+            if sample_rate < 1.0:
+                rand_mask = torch.rand(parallel.shape, device=device) < sample_rate
+                parallel = parallel & rand_mask
+
             rows, cols = torch.where(parallel)
             if rows.numel() > 0:
                 ei_parts.append(rows + s)
@@ -131,8 +162,8 @@ def find_parallel_pairs(
         ej_out = torch.cat(ej_parts)
 
         if max_pairs is not None and ei_out.numel() > max_pairs:
-            # Uniform random subsample — unbiased estimate of the downstream
-            # mean loss, hard memory cap on pathological batches.
+            # Final uniform trim to exactly ``max_pairs``. Safe here because
+            # the Bernoulli pre-filter already bounded accumulated size.
             perm = torch.randperm(ei_out.numel(), device=device)[:max_pairs]
             ei_out = ei_out[perm]
             ej_out = ej_out[perm]
@@ -204,6 +235,27 @@ def find_nearby_edge_pairs(
         chunk_size = max(1, _TARGET_CHUNK_MEM // max(num_edges * 20, 1))
         chunk_size = min(chunk_size, num_edges)
 
+        # NOTE(constrain): pre-``torch.where`` Bernoulli subsampling. The
+        # pathological OOM came from ``torch.where(nearby)`` producing
+        # billions of long indices across chunks — the end-of-function cap
+        # never got a chance to run because the intermediate list was
+        # already out of memory. Fix: AND ``nearby`` with a Bernoulli mask
+        # at rate ``max_pairs * _OVERSAMPLE / U`` inside each chunk, where
+        # U is the upper bound on the full enumeration (E choose 2). This
+        # bounds the accumulated output to ~``_OVERSAMPLE * max_pairs`` in
+        # expectation. The final trim then uniformly samples down to
+        # exactly ``max_pairs``.
+        _OVERSAMPLE = 4
+        upper_bound = (num_edges * (num_edges - 1)) // 2
+        if (
+            max_pairs is not None
+            and max_pairs > 0
+            and upper_bound > max_pairs * _OVERSAMPLE
+        ):
+            sample_rate = (max_pairs * _OVERSAMPLE) / upper_bound
+        else:
+            sample_rate = 1.0
+
         all_col = torch.arange(num_edges, device=device)
 
         ei_parts: list[torch.Tensor] = []
@@ -250,6 +302,11 @@ def find_nearby_edge_pairs(
             )
             nearby = nearby & ~shares
 
+            # Bernoulli pre-``torch.where`` mask (no-op when sample_rate == 1).
+            if sample_rate < 1.0:
+                rand_mask = torch.rand(nearby.shape, device=device) < sample_rate
+                nearby = nearby & rand_mask
+
             # Gather surviving pair indices within this chunk.
             rows, cols = torch.where(nearby)
             if rows.numel() > 0:
@@ -266,8 +323,8 @@ def find_nearby_edge_pairs(
         ej_out = torch.cat(ej_parts)
 
         if max_pairs is not None and ei_out.numel() > max_pairs:
-            # Uniform random subsample — unbiased estimate of the downstream
-            # mean loss, hard memory cap on pathological batches.
+            # Final uniform trim to exactly ``max_pairs``. Safe here because
+            # the Bernoulli pre-filter already bounded accumulated size.
             perm = torch.randperm(ei_out.numel(), device=device)[:max_pairs]
             ei_out = ei_out[perm]
             ej_out = ej_out[perm]

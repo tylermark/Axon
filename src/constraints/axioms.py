@@ -42,6 +42,7 @@ if TYPE_CHECKING:
 def find_parallel_pairs(
     angles: torch.Tensor,
     threshold: float,
+    max_pairs: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Find all edge pairs with near-parallel angles — fully on-device.
 
@@ -60,6 +61,11 @@ def find_parallel_pairs(
     Args:
         angles: Edge angles in [0, π), shape ``(E,)``.
         threshold: Max angle difference (radians) to count as parallel.
+        max_pairs: Optional hard cap on the number of returned pairs. When
+            the full enumeration produces more than ``max_pairs``, the
+            output is uniformly subsampled to exactly ``max_pairs`` — an
+            unbiased estimator of the downstream mean loss that bounds
+            memory on pathological batches where P approaches E².
 
     Returns:
         ``(ei, ej)`` — original edge indices of parallel pairs (ei < ej),
@@ -121,7 +127,17 @@ def find_parallel_pairs(
                 torch.empty(0, dtype=torch.long, device=device),
             )
 
-        return torch.cat(ei_parts), torch.cat(ej_parts)
+        ei_out = torch.cat(ei_parts)
+        ej_out = torch.cat(ej_parts)
+
+        if max_pairs is not None and ei_out.numel() > max_pairs:
+            # Uniform random subsample — unbiased estimate of the downstream
+            # mean loss, hard memory cap on pathological batches.
+            perm = torch.randperm(ei_out.numel(), device=device)[:max_pairs]
+            ei_out = ei_out[perm]
+            ej_out = ej_out[perm]
+
+        return ei_out, ej_out
 
 
 def find_nearby_edge_pairs(
@@ -129,6 +145,7 @@ def find_nearby_edge_pairs(
     positions: torch.Tensor,
     proximity_threshold: float,
     batch_index: torch.Tensor | None = None,
+    max_pairs: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Find non-adjacent edge pairs whose midpoints are within proximity.
 
@@ -148,6 +165,10 @@ def find_nearby_edge_pairs(
         proximity_threshold: Distance threshold for candidate pairs.
         batch_index: Optional ``(E,)`` batch membership per edge. When
             provided, cross-batch pairs are excluded.
+        max_pairs: Optional hard cap on the number of returned pairs.
+            Uniformly subsampled when exceeded — unbiased estimator of
+            the downstream mean loss, hard memory cap on pathological
+            batches.
 
     Returns:
         ``(ei, ej)`` — edge indices of nearby non-adjacent pairs (ei < ej).
@@ -241,7 +262,17 @@ def find_nearby_edge_pairs(
                 torch.empty(0, dtype=torch.long, device=device),
             )
 
-        return torch.cat(ei_parts), torch.cat(ej_parts)
+        ei_out = torch.cat(ei_parts)
+        ej_out = torch.cat(ej_parts)
+
+        if max_pairs is not None and ei_out.numel() > max_pairs:
+            # Uniform random subsample — unbiased estimate of the downstream
+            # mean loss, hard memory cap on pathological batches.
+            perm = torch.randperm(ei_out.numel(), device=device)[:max_pairs]
+            ei_out = ei_out[perm]
+            ej_out = ej_out[perm]
+
+        return ei_out, ej_out
 
 
 def compute_edge_directions(
@@ -396,12 +427,14 @@ class OrthogonalIntegrityAxiom(Axiom):
         self,
         tolerance_deg: float = 5.0,
         initial_weight: float = 1.0,
+        max_pairs: int | None = None,
     ) -> None:
         super().__init__("orthogonal", initial_weight)
         # Pre-compute the loss value at the tolerance angle boundary.
         # Angles within tolerance_deg of 0° or 90° are not violations.
         c = math.cos(math.radians(tolerance_deg))
         self.violation_threshold = c * c * (1.0 - c * c)
+        self.max_pairs = max_pairs
 
     def forward(
         self,
@@ -472,6 +505,15 @@ class OrthogonalIntegrityAxiom(Axiom):
         )
         pair_right = pair_left + 1 + offset  # (P,)
 
+        # Uniform random subsample when the full enumeration exceeds the
+        # per-axiom cap. Mean-of-losses is unbiased under uniform sampling,
+        # so gradient direction stays correct in expectation. This is the
+        # hard memory cap for pathological batches.
+        if self.max_pairs is not None and pair_left.numel() > self.max_pairs:
+            perm = torch.randperm(pair_left.numel(), device=device)[: self.max_pairs]
+            pair_left = pair_left[perm]
+            pair_right = pair_right[perm]
+
         pair_i = sorted_edge_ids[pair_left]
         pair_j = sorted_edge_ids[pair_right]
 
@@ -532,10 +574,12 @@ class ParallelPairConstancyAxiom(Axiom):
         angle_threshold_deg: float = 5.0,
         iqr_scale: float = 1.5,
         initial_weight: float = 1.0,
+        max_pairs: int | None = None,
     ) -> None:
         super().__init__("parallel_pair", initial_weight)
         self.angle_threshold = math.radians(angle_threshold_deg)
         self.iqr_scale = iqr_scale
+        self.max_pairs = max_pairs
 
     def forward(
         self,
@@ -555,8 +599,13 @@ class ParallelPairConstancyAxiom(Axiom):
 
         positions = node_positions.reshape(-1, 2) if node_positions.dim() == 3 else node_positions
 
-        # Find parallel pairs via O(E log E) sort + scan.
-        ei, ej = find_parallel_pairs(angles, self.angle_threshold)
+        # Find parallel pairs on-device, capped at ``max_pairs`` via uniform
+        # random subsampling inside the helper. Without the cap, pathological
+        # axis-aligned batches produce O(E²) pairs and the downstream
+        # differentiable per-pair computation OOMs.
+        ei, ej = find_parallel_pairs(
+            angles, self.angle_threshold, max_pairs=self.max_pairs,
+        )
         if ei.numel() == 0:
             return self._empty_result(device)
 
@@ -725,10 +774,12 @@ class SpatialNonIntersectionAxiom(Axiom):
         epsilon: float = 1e-3,
         proximity_threshold: float = 0.15,
         initial_weight: float = 2.0,
+        max_pairs: int | None = None,
     ) -> None:
         super().__init__("non_intersection", initial_weight)
         self.epsilon = epsilon
         self.proximity_threshold = proximity_threshold
+        self.max_pairs = max_pairs
 
     def forward(
         self,
@@ -760,12 +811,16 @@ class SpatialNonIntersectionAxiom(Axiom):
         src, dst = edge_index[0], edge_index[1]
 
         # Find nearby non-adjacent edge pairs on-device — vectorised O(E²)
-        # in chunks, with same-batch filtering via `batch_index`.
+        # in chunks, with same-batch filtering via `batch_index`. Capped at
+        # ``max_pairs`` via uniform random subsampling inside the helper so
+        # the downstream differentiable per-pair loop has bounded memory on
+        # pathological batches.
         ei, ej = find_nearby_edge_pairs(
             edge_index,
             positions,
             self.proximity_threshold,
             batch_index=batch_index,
+            max_pairs=self.max_pairs,
         )
         if ei.numel() == 0:
             return self._empty_result(device)
@@ -955,17 +1010,20 @@ class AxiomRegistry:
         """
         registry = cls()
         weights = config.initial_weights
+        max_pairs = config.max_pairs_per_axiom
 
         registry.register(
             OrthogonalIntegrityAxiom(
                 tolerance_deg=config.ortho_tolerance_deg,
                 initial_weight=weights.get("orthogonal", 1.0),
+                max_pairs=max_pairs,
             )
         )
         registry.register(
             ParallelPairConstancyAxiom(
                 iqr_scale=config.parallel_iqr_scale,
                 initial_weight=weights.get("parallel_pair", 1.0),
+                max_pairs=max_pairs,
             )
         )
         registry.register(
@@ -977,6 +1035,7 @@ class AxiomRegistry:
         registry.register(
             SpatialNonIntersectionAxiom(
                 initial_weight=weights.get("non_intersection", 2.0),
+                max_pairs=max_pairs,
             )
         )
 

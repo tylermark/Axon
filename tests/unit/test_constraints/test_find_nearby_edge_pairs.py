@@ -266,3 +266,59 @@ def test_microbench_scales_subquadratic_python_time() -> None:
     # Sanity: returned pair indices must satisfy ei < ej.
     if ei.numel() > 0:
         assert (ei < ej).all()
+
+
+# ---------------------------------------------------------------------------
+# max_pairs cap — guards the OOM fix for pathological batches
+# ---------------------------------------------------------------------------
+
+
+def test_max_pairs_caps_output() -> None:
+    """A dense point cloud produces many nearby pairs; max_pairs must cap."""
+    torch.manual_seed(11)
+    # Clustered points → many midpoints within the proximity threshold.
+    n_nodes = 200
+    n_edges = 150
+    positions = torch.rand(n_nodes, 2) * 0.1  # tight cluster
+    src = torch.randint(0, n_nodes, (n_edges,))
+    dst = torch.randint(0, n_nodes, (n_edges,))
+    mask = src != dst
+    src, dst = src[mask], dst[mask]
+    edge_index = torch.stack([src, dst])
+
+    ei_full, ej_full = find_nearby_edge_pairs(
+        edge_index, positions, proximity_threshold=0.2
+    )
+    # Cap to half the full enumeration so the cap is actually exercised.
+    assert ei_full.numel() >= 2, "set up a denser test — need > 2 pairs"
+    cap = ei_full.numel() // 2
+
+    ei, ej = find_nearby_edge_pairs(
+        edge_index, positions, proximity_threshold=0.2, max_pairs=cap
+    )
+    assert ei.numel() == cap
+    assert (ei < ej).all()
+    full_set = {(int(a), int(b)) for a, b in zip(ei_full, ej_full)}
+    cap_set = {(int(a), int(b)) for a, b in zip(ei, ej)}
+    assert cap_set <= full_set
+
+
+def test_max_pairs_noop_when_under_cap() -> None:
+    """max_pairs must be a no-op when the full count is below the cap."""
+    torch.manual_seed(12)
+    n_nodes = 20
+    n_edges = 10
+    positions = torch.rand(n_nodes, 2)
+    src = torch.arange(n_edges)
+    dst = torch.arange(n_edges) + 10
+    edge_index = torch.stack([src, dst])
+
+    ei_uncapped, ej_uncapped = find_nearby_edge_pairs(
+        edge_index, positions, proximity_threshold=0.5
+    )
+    ei_capped, ej_capped = find_nearby_edge_pairs(
+        edge_index, positions, proximity_threshold=0.5, max_pairs=10_000
+    )
+    uncapped = {(int(a), int(b)) for a, b in zip(ei_uncapped, ej_uncapped)}
+    capped = {(int(a), int(b)) for a, b in zip(ei_capped, ej_capped)}
+    assert uncapped == capped

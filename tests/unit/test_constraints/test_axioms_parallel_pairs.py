@@ -185,3 +185,55 @@ class TestFindParallelPairsEquivalence:
         ei, ej = find_parallel_pairs(angles, threshold=0.05)
         if ei.numel() > 0:
             assert (ei != ej).all(), "Self-pairs found in output"
+
+    def test_max_pairs_caps_output(self) -> None:
+        """max_pairs must bound the returned pair count on dense inputs.
+
+        With 50 nearly-identical angles and a wide threshold every pair is
+        parallel (1225 pairs). Passing max_pairs=100 must return exactly
+        100 pairs, all of which are valid (ei < ej) and drawn from the
+        original enumeration.
+        """
+        torch.manual_seed(13)
+        # 50 angles within 0.01 radians — every pair is "parallel"
+        angles = 0.5 + torch.rand(50) * 0.01
+        ei_full, ej_full = find_parallel_pairs(angles, threshold=0.05)
+        # Sanity: dense — expect C(50, 2) = 1225 pairs in the full enumeration
+        assert ei_full.numel() == 50 * 49 // 2
+
+        ei, ej = find_parallel_pairs(angles, threshold=0.05, max_pairs=100)
+        assert ei.numel() == 100, f"expected exactly 100 pairs, got {ei.numel()}"
+        assert (ei < ej).all(), "cap must preserve ei < ej invariant"
+        # Every returned pair must be a member of the full enumeration.
+        full_set = {(int(a), int(b)) for a, b in zip(ei_full, ej_full)}
+        cap_set = {(int(a), int(b)) for a, b in zip(ei, ej)}
+        assert cap_set <= full_set
+
+    def test_max_pairs_noop_when_under_cap(self) -> None:
+        """max_pairs must be a no-op when the full count is below the cap."""
+        angles = torch.tensor([0.0, 0.01, 0.5, 1.5])
+        ei_uncapped, ej_uncapped = find_parallel_pairs(angles, threshold=0.05)
+        ei_capped, ej_capped = find_parallel_pairs(
+            angles, threshold=0.05, max_pairs=1000
+        )
+        assert _pairs_to_set(ei_uncapped, ej_uncapped) == _pairs_to_set(
+            ei_capped, ej_capped
+        )
+
+
+class TestConstraintConfigMaxPairsWiring:
+    """Lock the end-to-end wiring from ConstraintConfig to pair-based axioms."""
+
+    def test_registry_propagates_max_pairs(self) -> None:
+        from src.constraints.axioms import AxiomRegistry
+        from src.pipeline.config import ConstraintConfig
+
+        cfg = ConstraintConfig(max_pairs_per_axiom=12345)
+        reg = AxiomRegistry.create_default(cfg)
+
+        for name in ("orthogonal", "parallel_pair", "non_intersection"):
+            axiom = reg.get(name)
+            assert axiom is not None
+            assert getattr(axiom, "max_pairs", None) == 12345, (
+                f"{name} axiom did not receive max_pairs from config"
+            )

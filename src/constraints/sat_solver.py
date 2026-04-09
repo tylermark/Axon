@@ -387,8 +387,11 @@ def _extract_parallel_info(
 
     angle_threshold = math.radians(5.0)  # consistent with axiom default
 
-    # O(E log E) parallel pair detection via sort + scan.
-    ei, ej = find_parallel_pairs(edge_angles, angle_threshold)
+    # Cap at the same per-axiom limit the parallel_pair axiom uses so
+    # diagnostics never exceed the memory budget of training.
+    ei, ej = find_parallel_pairs(
+        edge_angles, angle_threshold, max_pairs=config.max_pairs_per_axiom,
+    )
     if ei.numel() == 0:
         return None, None
 

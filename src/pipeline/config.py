@@ -221,6 +221,20 @@ class ConstraintConfig(BaseModel):
         },
         description="Initial axiom weights before meta-learning.",
     )
+    max_pairs_per_axiom: int = Field(
+        default=1_000_000,
+        ge=1000,
+        description=(
+            "Hard cap on the differentiable pair count per pair-based axiom "
+            "(orthogonal, parallel_pair, non_intersection). When full "
+            "enumeration exceeds this, pairs are uniformly subsampled before "
+            "the differentiable per-pair computation runs. Random subsampling "
+            "gives an unbiased estimate of the mean loss, so gradient "
+            "direction stays correct in expectation while memory is bounded. "
+            "Prevents OOMs on pathological batches whose edge count (E) "
+            "produces O(E²) pair enumerations."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

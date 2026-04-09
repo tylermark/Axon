@@ -21,6 +21,7 @@ import logging
 import pickle
 import tarfile
 import zipfile
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -238,6 +239,12 @@ class ArchCAD400KDataset(Dataset):
 
     # -- Shard mode ---------------------------------------------------------
 
+    # Maximum number of shards held in the LRU cache. Each cached shard is
+    # loaded with ``mmap=True`` so the OS, not Python, pages data on demand —
+    # but the LRU still caps the number of distinct mmap regions kept alive,
+    # which bounds Python-side overhead and virtual address space.
+    _SHARD_CACHE_MAX = 8
+
     def _init_shard_mode(self, shard_files: list[Path]) -> None:
         """Load pre-processed shard metadata.
 
@@ -250,10 +257,19 @@ class ArchCAD400KDataset(Dataset):
         self._shard_files = shard_files
 
         self._shard_lengths: list[int] = []
-        self._shard_cache: dict[int, dict] = {}
+        # LRU cache of loaded shards — OrderedDict preserves insertion order
+        # so ``move_to_end`` + ``popitem(last=False)`` gives classic LRU.
+        # Replaces an unbounded ``dict`` that previously grew until the
+        # Colab host ran out of RAM and the kernel was OOM-killed.
+        self._shard_cache: OrderedDict[int, dict] = OrderedDict()
         total = 0
         for sf in shard_files:
-            peek = torch.load(sf, map_location="cpu", weights_only=True)
+            # NOTE(train): ``mmap=True`` makes the peek load file-backed so
+            # counting drawings during init never materialises the full
+            # shard contents into RAM.
+            peek = torch.load(
+                sf, map_location="cpu", weights_only=True, mmap=True,
+            )
             if "drawing_offsets" in peek:
                 # Number of drawings = len(offsets) - 1
                 n = peek["drawing_offsets"].size(0) - 1
@@ -268,9 +284,10 @@ class ArchCAD400KDataset(Dataset):
 
         self._total_len = total
         logger.info(
-            "ArchCAD400K shard mode: %d shards, %d drawings total",
+            "ArchCAD400K shard mode: %d shards, %d drawings total, LRU cache=%d",
             len(shard_files),
             total,
+            self._SHARD_CACHE_MAX,
         )
 
     def _get_shard_sample(self, idx: int) -> dict[str, torch.Tensor]:
@@ -280,18 +297,34 @@ class ArchCAD400KDataset(Dataset):
         ``labels`` tensors, indexed by ``drawing_offsets``.  This method
         slices out the primitives for one drawing and pads/truncates to
         ``max_primitives``.
+
+        Shards are loaded with ``mmap=True`` and kept in a bounded LRU
+        cache (max ``_SHARD_CACHE_MAX`` entries). The old implementation
+        kept every accessed shard in a dict forever — over a full epoch
+        of shuffled sampling that equals preloading the entire dataset
+        into RAM, which OOM-killed the Colab kernel at ~12 minutes in
+        during SFT training.
         """
         offset = 0
         for shard_idx, length in enumerate(self._shard_lengths):
             if idx < offset + length:
                 local_idx = idx - offset
-                if shard_idx not in self._shard_cache:
-                    self._shard_cache[shard_idx] = torch.load(
+                if shard_idx in self._shard_cache:
+                    # Cache hit — mark as most-recently-used.
+                    self._shard_cache.move_to_end(shard_idx)
+                    shard = self._shard_cache[shard_idx]
+                else:
+                    # Cache miss — load with mmap so the OS pages on demand.
+                    shard = torch.load(
                         self._shard_files[shard_idx],
                         map_location="cpu",
                         weights_only=True,
+                        mmap=True,
                     )
-                shard = self._shard_cache[shard_idx]
+                    self._shard_cache[shard_idx] = shard
+                    # Evict oldest entries until under the cap.
+                    while len(self._shard_cache) > self._SHARD_CACHE_MAX:
+                        self._shard_cache.popitem(last=False)
                 return self._extract_drawing(shard, local_idx)
             offset += length
         msg = f"Index {idx} out of range for {self._total_len} shard samples"

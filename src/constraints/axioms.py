@@ -43,17 +43,27 @@ def find_parallel_pairs(
     angles: torch.Tensor,
     threshold: float,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Find all edge pairs with near-parallel angles via sort + scan.
+    """Find all edge pairs with near-parallel angles — fully on-device.
 
-    O(E log E) time, O(E + P) memory where P = number of parallel pairs.
-    Replaces the O(E²) pairwise angle-diff matrix.
+    Uses a row-chunked pairwise π-periodic angle-difference test. All work
+    stays on the input device; there are no ``.tolist()`` round-trips or
+    Python-level loops over edges. Peak memory is bounded to
+    ``_TARGET_CHUNK_MEM`` bytes via adaptive row chunking, so the function
+    scales to tens of thousands of edges on a 48 GB GPU.
+
+    The old sort + Python-scan implementation was O(P) in pure Python with
+    ``.tolist()`` transfers. For axis-aligned floor plans where nearly
+    every edge is parallel to nearly every other, P approaches E² and the
+    scan degraded to tens of millions of Python iterations per training
+    step — a ~20-minute-per-step pathology on Colab.
 
     Args:
         angles: Edge angles in [0, π), shape ``(E,)``.
         threshold: Max angle difference (radians) to count as parallel.
 
     Returns:
-        ``(ei, ej)`` — original edge indices of parallel pairs (ei < ej).
+        ``(ei, ej)`` — original edge indices of parallel pairs (ei < ej),
+        on the same device as ``angles``.
     """
     device = angles.device
     num_edges = angles.shape[0]
@@ -63,70 +73,46 @@ def find_parallel_pairs(
             torch.empty(0, dtype=torch.long, device=device),
         )
 
-    # Sort edges by angle; materialise as plain Python lists to avoid per-element
-    # .item() tensor round-trips inside the scan loops.
-    sorted_order = torch.argsort(angles)
-    # NOTE(constrain): .tolist() moves the whole tensor to CPU once, so the inner
-    # loops use pure Python float/int arithmetic — no tensor overhead per iteration.
-    sorted_angles_list: list[float] = angles[sorted_order].tolist()
-    sorted_order_list: list[int] = sorted_order.tolist()
+    # Adaptive row chunking. A chunk of K rows allocates ~K * E * 5 bytes
+    # peak (one (K, E) float32 diff + one (K, E) bool mask + ancillary
+    # (K, E) row-index broadcast). Cap per-chunk memory so the function
+    # fits a predictable budget regardless of E.
+    _TARGET_CHUNK_MEM = 256 * 1024 * 1024  # 256 MB
+    chunk_size = max(1, _TARGET_CHUNK_MEM // max(num_edges * 5, 1))
+    chunk_size = min(chunk_size, num_edges)
 
-    ei_list: list[tuple[int, int]] = []
+    ei_parts: list[torch.Tensor] = []
+    ej_parts: list[torch.Tensor] = []
+    all_cols = torch.arange(num_edges, device=device)
 
-    # Sliding window: for each edge i, scan forward while angle diff < threshold.
-    for i in range(num_edges):
-        j = i + 1
-        while j < num_edges:
-            diff = abs(sorted_angles_list[j] - sorted_angles_list[i])
-            if diff > threshold:
-                break
-            ei_list.append((sorted_order_list[i], sorted_order_list[j]))
-            j += 1
+    for s in range(0, num_edges, chunk_size):
+        e = min(s + chunk_size, num_edges)
 
-    # Also handle wraparound: edges near 0 and near π are parallel.
-    # Edges near π have angle ≈ π, edges near 0 have angle ≈ 0.
-    # The π-periodic distance: min(diff, π - diff) < threshold
-    # means we also need pairs where sorted_angles[j] + π - sorted_angles[i] < threshold,
-    # i.e. the last few edges (near π) paired with the first few (near 0).
-    if num_edges > 1:
-        i = num_edges - 1
-        j = 0
-        while j < i:
-            diff = math.pi - sorted_angles_list[i] + sorted_angles_list[j]
-            if diff > threshold:
-                break
-            ei_list.append((sorted_order_list[i], sorted_order_list[j]))
-            j += 1
-        # Scan backward from the end for other near-π edges too.
-        # NOTE(constrain): duplicate pairs are harmless — torch.unique at the end
-        # deduplicates everything, so the O(P) `pair not in ei_list` guard is removed.
-        for i in range(num_edges - 2, -1, -1):
-            if math.pi - sorted_angles_list[i] > threshold:
-                break
-            j = 0
-            while j < i:
-                diff = math.pi - sorted_angles_list[i] + sorted_angles_list[j]
-                if diff > threshold:
-                    break
-                ei_list.append((sorted_order_list[i], sorted_order_list[j]))
-                j += 1
+        # Pairwise angle diff for rows [s, e) vs all columns — on-device.
+        diff = (angles[s:e].unsqueeze(1) - angles.unsqueeze(0)).abs()  # (K, E)
+        # π-periodic distance: edges at ≈0 and ≈π are parallel.
+        # NOTE(constrain): use ``<=`` to match the legacy sort + scan loop,
+        # which broke only on strict ``diff > threshold`` — the equivalence
+        # tests rely on this exact boundary behavior.
+        wrapped = torch.minimum(diff, math.pi - diff)
+        parallel = wrapped <= threshold
 
-    if not ei_list:
+        # Upper-triangular only: enforce global row_index < col_index.
+        row_global = torch.arange(s, e, device=device).unsqueeze(1)  # (K, 1)
+        parallel = parallel & (all_cols.unsqueeze(0) > row_global)
+
+        rows, cols = torch.where(parallel)
+        if rows.numel() > 0:
+            ei_parts.append(rows + s)
+            ej_parts.append(cols)
+
+    if not ei_parts:
         return (
             torch.empty(0, dtype=torch.long, device=device),
             torch.empty(0, dtype=torch.long, device=device),
         )
 
-    pairs = torch.tensor(ei_list, dtype=torch.long, device=device)
-    # Ensure ei < ej for consistency.
-    ei = torch.min(pairs[:, 0], pairs[:, 1])
-    ej = torch.max(pairs[:, 0], pairs[:, 1])
-    # Deduplicate.
-    combined = ei * num_edges + ej
-    unique_idx = torch.unique(combined, return_inverse=False, sorted=True)
-    ei = unique_idx // num_edges
-    ej = unique_idx % num_edges
-    return ei, ej
+    return torch.cat(ei_parts), torch.cat(ej_parts)
 
 
 def find_nearby_edge_pairs(
@@ -310,22 +296,20 @@ def edges_from_adjacency(
     # Upper-triangular to avoid duplicate undirected edges.
     adj_upper = torch.triu(adj_binary, diagonal=1)
 
-    # Collect edge indices across all batch items.
-    batch_offset = 0
-    n = adjacency.shape[-1]
-    src_list = []
-    dst_list = []
-    for b in range(adj_upper.shape[0]):
-        rows, cols = torch.where(adj_upper[b] > 0)
-        src_list.append(rows + batch_offset)
-        dst_list.append(cols + batch_offset)
-        batch_offset += n
-
-    if len(src_list) == 0:
+    # Vectorised collection across the batch: a single ``torch.nonzero`` on
+    # the full (B, N, N) tensor replaces the Python ``for b in range(B)``
+    # loop. The old loop did B ``torch.where`` calls, each forcing a CUDA
+    # sync — with B=16 that was 16 round-trips per training step.
+    # ``torch.nonzero`` itself pays a single CUDA sync (variable output),
+    # so we go from B syncs down to 1.
+    nz = torch.nonzero(adj_upper > 0, as_tuple=False)  # (K, 3): (batch, row, col)
+    if nz.numel() == 0:
         return torch.zeros(2, 0, dtype=torch.long, device=adjacency.device)
 
-    src_all = torch.cat(src_list)
-    dst_all = torch.cat(dst_list)
+    n = adjacency.shape[-1]
+    batch_idx = nz[:, 0]
+    src_all = batch_idx * n + nz[:, 1]
+    dst_all = batch_idx * n + nz[:, 2]
     return torch.stack([src_all, dst_all], dim=0)
 
 
@@ -431,35 +415,47 @@ class OrthogonalIntegrityAxiom(Axiom):
         # Find boundaries between different nodes.
         change_mask = torch.cat(
             [
-                torch.tensor([True], device=device),
+                torch.ones(1, dtype=torch.bool, device=device),
                 sorted_nodes[1:] != sorted_nodes[:-1],
             ]
         )
-        group_starts = torch.where(change_mask)[0]
-        group_ends = torch.cat([group_starts[1:], torch.tensor([len(sorted_nodes)], device=device)])
+        group_starts = torch.nonzero(change_mask, as_tuple=False).squeeze(1)
+        group_ends = torch.cat(
+            [
+                group_starts[1:],
+                torch.tensor([sorted_nodes.shape[0]], device=device),
+            ]
+        )
 
-        pair_i_list: list[torch.Tensor] = []
-        pair_j_list: list[torch.Tensor] = []
+        # Vectorised segmented pair expansion: replaces a Python loop that
+        # called ``.item()`` twice per junction (hundreds of CUDA syncs per
+        # training step). For each sorted position k, generate pairs
+        # ``(k, k+1), (k, k+2), ..., (k, group_end[k] - 1)``.
+        num_groups = group_starts.shape[0]
+        group_sizes = group_ends - group_starts  # (G,)
+        group_id = torch.repeat_interleave(
+            torch.arange(num_groups, device=device),
+            group_sizes,
+        )  # (L,)
+        positions = torch.arange(sorted_edge_ids.shape[0], device=device)  # (L,)
+        group_end_of_pos = group_ends[group_id]  # (L,)
+        forward_count = group_end_of_pos - positions - 1  # (L,) ≥ 0
 
-        for g in range(len(group_starts)):
-            s, e = group_starts[g].item(), group_ends[g].item()
-            if e - s < 2:
-                continue
-            edge_ids = sorted_edge_ids[s:e]
-            # All pairs within this group.
-            n_local = len(edge_ids)
-            idx_i = torch.arange(n_local, device=device)
-            idx_j = torch.arange(n_local, device=device)
-            grid_i, grid_j = torch.meshgrid(idx_i, idx_j, indexing="ij")
-            upper_mask = grid_i < grid_j
-            pair_i_list.append(edge_ids[grid_i[upper_mask]])
-            pair_j_list.append(edge_ids[grid_j[upper_mask]])
-
-        if len(pair_i_list) == 0:
+        # Expand to explicit pair index lists, fully on-device.
+        pair_left = torch.repeat_interleave(positions, forward_count)  # (P,)
+        if pair_left.numel() == 0:
             return self._empty_result(device)
 
-        pair_i = torch.cat(pair_i_list)
-        pair_j = torch.cat(pair_j_list)
+        # Per-position offset within each block: 0, 1, 2, ..., forward_count[k]-1.
+        cum = torch.cumsum(forward_count, dim=0)
+        block_start = cum - forward_count  # exclusive cumsum: block start per position
+        offset = (
+            torch.arange(pair_left.shape[0], device=device) - block_start[pair_left]
+        )
+        pair_right = pair_left + 1 + offset  # (P,)
+
+        pair_i = sorted_edge_ids[pair_left]
+        pair_j = sorted_edge_ids[pair_right]
 
         # Cosine similarity between direction vectors of each pair.
         dot = (directions[pair_i] * directions[pair_j]).sum(dim=-1)

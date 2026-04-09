@@ -107,6 +107,51 @@ class SFTConfig:
     seed: int = 42
     """Random seed for reproducibility."""
 
+    profile_first_n_steps: int = 5
+    """Record per-section wall-clock timings for the first N training steps.
+
+    Probes tokenizer / diffusion / edges_from_adjacency / constraint forward /
+    backward / optimizer. Each section is CUDA-synced for accurate GPU timing.
+    Set to 0 to disable.
+    """
+
+
+# ---------------------------------------------------------------------------
+# Per-step wall-clock timer
+# ---------------------------------------------------------------------------
+
+
+class _StepTimer:
+    """Optional CUDA-synced section timer for profiling a single training step.
+
+    When ``enabled`` is False every method is a no-op so there is zero
+    overhead on non-profiled steps. When enabled, each ``mark`` call triggers
+    a ``torch.cuda.synchronize`` (on CUDA devices) so wall-clock measurements
+    reflect actual kernel runtime, not just async kernel launch latency.
+    """
+
+    def __init__(self, device: torch.device, enabled: bool) -> None:
+        self.device = device
+        self.enabled = enabled
+        self.timings: dict[str, float] = {}
+        self._t = 0.0
+
+    def start(self) -> None:
+        if not self.enabled:
+            return
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        self._t = time.perf_counter()
+
+    def mark(self, name: str) -> None:
+        if not self.enabled:
+            return
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        now = time.perf_counter()
+        self.timings[name] = now - self._t
+        self._t = now
+
 
 # ---------------------------------------------------------------------------
 # Device detection
@@ -303,6 +348,7 @@ class SFTTrainer:
         context: torch.Tensor | None,
         node_mask: torch.Tensor | None,
         context_mask: torch.Tensor | None = None,
+        timer: _StepTimer | None = None,
     ) -> tuple[torch.Tensor, dict[str, float]]:
         """Compute L_total = L_diffusion + lambda_SAT * L_constraints.
 
@@ -312,6 +358,8 @@ class SFTTrainer:
             context: (B, N_ctx, d_ctx) cross-modal context from tokenizer.
             node_mask: (B, N) valid node mask.
             context_mask: (B, N_ctx) context token mask.
+            timer: Optional ``_StepTimer`` to record per-section wall-clock
+                timings. Intended for debugging the first few steps only.
 
         Returns:
             Tuple of (total_loss, metrics_dict) where metrics_dict contains
@@ -319,12 +367,17 @@ class SFTTrainer:
         """
         # --- Diffusion VLB loss ---
         diff_loss: DiffusionLoss = self.diffusion_model(x_0, a_0, context, node_mask, context_mask)
+        if timer is not None:
+            timer.mark("time/diffusion_fwd_s")
 
         # --- Constraint loss ---
         # Run a single denoising step to get the predicted graph for
         # constraint evaluation, or evaluate constraints on the clean
         # graph to provide gradient signal.
         edge_index = edges_from_adjacency(a_0, node_mask)
+        if timer is not None:
+            timer.mark("time/edges_from_adj_s")
+
         constraint_output = self.constraint_module(
             node_positions=x_0,
             adjacency=a_0,
@@ -332,6 +385,8 @@ class SFTTrainer:
             node_mask=node_mask,
         )
         constraint_loss = constraint_output.total_loss
+        if timer is not None:
+            timer.mark("time/constraint_fwd_s")
 
         # --- Composite ---
         total_loss = diff_loss.total + self.config.lambda_sat * constraint_loss
@@ -393,12 +448,21 @@ class SFTTrainer:
         Returns:
             Dict of per-step metric values.
         """
+        # Profile only the first N steps so we can locate per-section
+        # bottlenecks without permanently syncing on every training step.
+        timer = _StepTimer(
+            self.device,
+            enabled=self.global_step < self.config.profile_first_n_steps,
+        )
+
         # Move batch to device
         x_0 = batch["x_0"].to(self.device)
         a_0 = batch["a_0"].to(self.device)
         node_mask = batch.get("node_mask")
         if node_mask is not None:
             node_mask = node_mask.to(self.device)
+
+        timer.start()
 
         # Tokenizer forward pass for context embeddings
         context = None
@@ -413,15 +477,17 @@ class SFTTrainer:
             else:
                 # Direct tensor output
                 context = tokenizer_output
+        timer.mark("time/tokenizer_fwd_s")
 
-        # Compute composite loss
+        # Compute composite loss (further subdivided inside via the timer).
         self.optimizer.zero_grad()
         total_loss, metrics = self._compute_composite_loss(
-            x_0, a_0, context, node_mask, context_mask
+            x_0, a_0, context, node_mask, context_mask, timer=timer,
         )
 
         # Backward pass
         total_loss.backward()
+        timer.mark("time/backward_s")
 
         # Gradient clipping
         grad_norm = torch.nn.utils.clip_grad_norm_(
@@ -437,8 +503,19 @@ class SFTTrainer:
         # Optimizer step
         self.optimizer.step()
         self.scheduler.step()
+        timer.mark("time/optimizer_s")
 
         metrics["lr"] = self.scheduler.get_last_lr()[0]
+
+        # Per-step profile log for the first few steps — prints to stdout so
+        # it is visible in Colab regardless of W&B availability.
+        if timer.enabled and timer.timings:
+            metrics.update(timer.timings)
+            parts = [
+                f"{k.replace('time/', '').replace('_s', '')}={v * 1000:.0f}ms"
+                for k, v in timer.timings.items()
+            ]
+            logger.info("step %d timing: %s", self.global_step, " ".join(parts))
 
         # W&B logging
         if self._wandb_run is not None:

@@ -113,6 +113,21 @@ class SFTConfig:
     eval_every_n_epochs: int = 5
     """Run evaluation every N epochs."""
 
+    eval_benchmark_metrics: bool = False
+    """Compute HIoU / GED / Betti benchmark metrics during periodic eval.
+
+    Default **False** because ``compute_ged`` uses
+    ``networkx.optimize_graph_edit_distance`` on graphs with up to 512
+    nodes per sample, which is NP-hard and can allocate GBs of host memory
+    per call. Across a full eval pass that exploded past the 176 GB Colab
+    host RAM ceiling and OOM-killed the kernel.
+
+    Eval loss (``eval/loss/total``) is always computed regardless — that
+    is cheap and sufficient to monitor training progress. Enable this flag
+    only for final model-quality evaluation on a small held-out set, not
+    for periodic training checks.
+    """
+
     save_every_n_epochs: int = 5
     """Save checkpoint every N epochs."""
 
@@ -638,10 +653,14 @@ class SFTTrainer:
                 for key, value in metrics.items():
                     all_metrics.setdefault(f"eval/{key}", []).append(value)
 
-                # Benchmark metrics on sampled outputs
-                self._compute_benchmark_metrics(
-                    x_0, a_0, node_mask, context, context_mask, batch, all_metrics
-                )
+                # Benchmark metrics on sampled outputs — gated behind
+                # ``eval_benchmark_metrics`` because ``compute_ged`` uses an
+                # NP-hard networkx GED that blows host memory past the Colab
+                # ceiling on graphs with hundreds of nodes.
+                if self.config.eval_benchmark_metrics:
+                    self._compute_benchmark_metrics(
+                        x_0, a_0, node_mask, context, context_mask, batch, all_metrics
+                    )
 
         # Average all eval metrics
         avg_metrics: dict[str, float] = {

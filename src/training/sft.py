@@ -128,6 +128,16 @@ class _StepTimer:
     overhead on non-profiled steps. When enabled, each ``mark`` call triggers
     a ``torch.cuda.synchronize`` (on CUDA devices) so wall-clock measurements
     reflect actual kernel runtime, not just async kernel launch latency.
+
+    On CUDA, each mark also records:
+
+    - ``alloc_gb``: currently live PyTorch allocations (GB)
+    - ``peak_gb``: peak allocation since the previous mark (GB), captured
+      via ``reset_peak_memory_stats`` at each boundary
+
+    Timings and memory stats are printed **live** at each mark call — not
+    aggregated at step end — so a mid-step CUDA OOM still leaves a trace
+    of every section that completed before the crash.
     """
 
     def __init__(self, device: torch.device, enabled: bool) -> None:
@@ -135,12 +145,21 @@ class _StepTimer:
         self.enabled = enabled
         self.timings: dict[str, float] = {}
         self._t = 0.0
+        self._step_idx: int | None = None
 
-    def start(self) -> None:
+    def start(self, step_idx: int | None = None) -> None:
         if not self.enabled:
             return
+        self._step_idx = step_idx
         if self.device.type == "cuda":
             torch.cuda.synchronize()
+            torch.cuda.reset_peak_memory_stats()
+            alloc_gb = torch.cuda.memory_allocated() / 1e9
+            logger.info(
+                "step %s start: alloc=%.2fGB",
+                "?" if step_idx is None else str(step_idx),
+                alloc_gb,
+            )
         self._t = time.perf_counter()
 
     def mark(self, name: str) -> None:
@@ -149,8 +168,30 @@ class _StepTimer:
         if self.device.type == "cuda":
             torch.cuda.synchronize()
         now = time.perf_counter()
-        self.timings[name] = now - self._t
+        dt = now - self._t
+        self.timings[name] = dt
         self._t = now
+
+        short = name.replace("time/", "").replace("_s", "")
+        if self.device.type == "cuda":
+            alloc_gb = torch.cuda.memory_allocated() / 1e9
+            peak_gb = torch.cuda.max_memory_allocated() / 1e9
+            logger.info(
+                "step %s   %-22s  %7.0f ms   alloc=%5.2fGB   peak=%5.2fGB",
+                "?" if self._step_idx is None else str(self._step_idx),
+                short,
+                dt * 1000,
+                alloc_gb,
+                peak_gb,
+            )
+            torch.cuda.reset_peak_memory_stats()
+        else:
+            logger.info(
+                "step %s   %-22s  %7.0f ms",
+                "?" if self._step_idx is None else str(self._step_idx),
+                short,
+                dt * 1000,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -462,7 +503,7 @@ class SFTTrainer:
         if node_mask is not None:
             node_mask = node_mask.to(self.device)
 
-        timer.start()
+        timer.start(step_idx=self.global_step)
 
         # Tokenizer forward pass for context embeddings
         context = None
@@ -507,15 +548,11 @@ class SFTTrainer:
 
         metrics["lr"] = self.scheduler.get_last_lr()[0]
 
-        # Per-step profile log for the first few steps — prints to stdout so
-        # it is visible in Colab regardless of W&B availability.
+        # The per-section timing + memory lines are printed live inside
+        # ``_StepTimer.mark`` so a mid-step OOM still leaves a trace; only
+        # the aggregated metrics are forwarded to W&B here.
         if timer.enabled and timer.timings:
             metrics.update(timer.timings)
-            parts = [
-                f"{k.replace('time/', '').replace('_s', '')}={v * 1000:.0f}ms"
-                for k, v in timer.timings.items()
-            ]
-            logger.info("step %d timing: %s", self.global_step, " ".join(parts))
 
         # W&B logging
         if self._wandb_run is not None:

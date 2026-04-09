@@ -73,46 +73,55 @@ def find_parallel_pairs(
             torch.empty(0, dtype=torch.long, device=device),
         )
 
-    # Adaptive row chunking. A chunk of K rows allocates ~K * E * 5 bytes
-    # peak (one (K, E) float32 diff + one (K, E) bool mask + ancillary
-    # (K, E) row-index broadcast). Cap per-chunk memory so the function
-    # fits a predictable budget regardless of E.
-    _TARGET_CHUNK_MEM = 256 * 1024 * 1024  # 256 MB
-    chunk_size = max(1, _TARGET_CHUNK_MEM // max(num_edges * 5, 1))
-    chunk_size = min(chunk_size, num_edges)
+    # NOTE(constrain): the return value is a pair of long index tensors —
+    # no gradient ever flows through this function. Wrapping the entire
+    # body in ``torch.no_grad()`` is essential, not cosmetic: without it,
+    # every per-chunk ``diff`` / ``wrapped`` tensor is retained in the
+    # autograd graph (because ``angles`` → ``directions`` → ``positions``
+    # is differentiable), turning the bounded 256 MB per-chunk budget
+    # into tens of GB of retained activations across a full SFT step.
+    # This was the OOM seen at batch=16 after the initial vectorisation.
+    with torch.no_grad():
+        # Adaptive row chunking. A chunk of K rows allocates ~K * E * 5 bytes
+        # peak (one (K, E) float32 diff + one (K, E) bool mask + ancillary
+        # (K, E) row-index broadcast). Cap per-chunk memory so the function
+        # fits a predictable budget regardless of E.
+        _TARGET_CHUNK_MEM = 256 * 1024 * 1024  # 256 MB
+        chunk_size = max(1, _TARGET_CHUNK_MEM // max(num_edges * 5, 1))
+        chunk_size = min(chunk_size, num_edges)
 
-    ei_parts: list[torch.Tensor] = []
-    ej_parts: list[torch.Tensor] = []
-    all_cols = torch.arange(num_edges, device=device)
+        ei_parts: list[torch.Tensor] = []
+        ej_parts: list[torch.Tensor] = []
+        all_cols = torch.arange(num_edges, device=device)
 
-    for s in range(0, num_edges, chunk_size):
-        e = min(s + chunk_size, num_edges)
+        for s in range(0, num_edges, chunk_size):
+            e = min(s + chunk_size, num_edges)
 
-        # Pairwise angle diff for rows [s, e) vs all columns — on-device.
-        diff = (angles[s:e].unsqueeze(1) - angles.unsqueeze(0)).abs()  # (K, E)
-        # π-periodic distance: edges at ≈0 and ≈π are parallel.
-        # NOTE(constrain): use ``<=`` to match the legacy sort + scan loop,
-        # which broke only on strict ``diff > threshold`` — the equivalence
-        # tests rely on this exact boundary behavior.
-        wrapped = torch.minimum(diff, math.pi - diff)
-        parallel = wrapped <= threshold
+            # Pairwise angle diff for rows [s, e) vs all columns — on-device.
+            diff = (angles[s:e].unsqueeze(1) - angles.unsqueeze(0)).abs()  # (K, E)
+            # π-periodic distance: edges at ≈0 and ≈π are parallel.
+            # NOTE(constrain): use ``<=`` to match the legacy sort + scan loop,
+            # which broke only on strict ``diff > threshold`` — the equivalence
+            # tests rely on this exact boundary behavior.
+            wrapped = torch.minimum(diff, math.pi - diff)
+            parallel = wrapped <= threshold
 
-        # Upper-triangular only: enforce global row_index < col_index.
-        row_global = torch.arange(s, e, device=device).unsqueeze(1)  # (K, 1)
-        parallel = parallel & (all_cols.unsqueeze(0) > row_global)
+            # Upper-triangular only: enforce global row_index < col_index.
+            row_global = torch.arange(s, e, device=device).unsqueeze(1)  # (K, 1)
+            parallel = parallel & (all_cols.unsqueeze(0) > row_global)
 
-        rows, cols = torch.where(parallel)
-        if rows.numel() > 0:
-            ei_parts.append(rows + s)
-            ej_parts.append(cols)
+            rows, cols = torch.where(parallel)
+            if rows.numel() > 0:
+                ei_parts.append(rows + s)
+                ej_parts.append(cols)
 
-    if not ei_parts:
-        return (
-            torch.empty(0, dtype=torch.long, device=device),
-            torch.empty(0, dtype=torch.long, device=device),
-        )
+        if not ei_parts:
+            return (
+                torch.empty(0, dtype=torch.long, device=device),
+                torch.empty(0, dtype=torch.long, device=device),
+            )
 
-    return torch.cat(ei_parts), torch.cat(ej_parts)
+        return torch.cat(ei_parts), torch.cat(ej_parts)
 
 
 def find_nearby_edge_pairs(
@@ -152,78 +161,87 @@ def find_nearby_edge_pairs(
             torch.empty(0, dtype=torch.long, device=device),
         )
 
-    src, dst = edge_index[0], edge_index[1]
-    mid = (positions[src] + positions[dst]) * 0.5  # (E, 2)
-    half_len = (positions[dst] - positions[src]).norm(dim=-1) * 0.5  # (E,)
+    # NOTE(constrain): the return value is a pair of long index tensors —
+    # no gradient ever flows through this function. Wrapping the entire
+    # body in ``torch.no_grad()`` is essential, not cosmetic: without it,
+    # every per-chunk ``diff`` / ``dist`` / ``nearby`` tensor is retained
+    # in the autograd graph (because ``positions`` is differentiable),
+    # turning the bounded 256 MB per-chunk budget into tens of GB of
+    # retained activations across a full SFT step. This was the OOM seen
+    # at batch=16 after the initial vectorisation.
+    with torch.no_grad():
+        src, dst = edge_index[0], edge_index[1]
+        mid = (positions[src] + positions[dst]) * 0.5  # (E, 2)
+        half_len = (positions[dst] - positions[src]).norm(dim=-1) * 0.5  # (E,)
 
-    # Adaptive row-chunking to bound peak memory.
-    # A row chunk of size K allocates (K, E, 2) floats for `diff` plus a
-    # few (K, E) scratch tensors — ~K * E * 20 bytes peak. Cap per chunk
-    # at _TARGET_CHUNK_MEM so the full function stays within a predictable
-    # memory budget regardless of E.
-    _TARGET_CHUNK_MEM = 256 * 1024 * 1024  # 256 MB
-    chunk_size = max(1, _TARGET_CHUNK_MEM // max(num_edges * 20, 1))
-    chunk_size = min(chunk_size, num_edges)
+        # Adaptive row-chunking to bound peak memory.
+        # A row chunk of size K allocates (K, E, 2) floats for `diff` plus a
+        # few (K, E) scratch tensors — ~K * E * 20 bytes peak. Cap per chunk
+        # at _TARGET_CHUNK_MEM so the full function stays within a predictable
+        # memory budget regardless of E.
+        _TARGET_CHUNK_MEM = 256 * 1024 * 1024  # 256 MB
+        chunk_size = max(1, _TARGET_CHUNK_MEM // max(num_edges * 20, 1))
+        chunk_size = min(chunk_size, num_edges)
 
-    all_col = torch.arange(num_edges, device=device)
+        all_col = torch.arange(num_edges, device=device)
 
-    ei_parts: list[torch.Tensor] = []
-    ej_parts: list[torch.Tensor] = []
+        ei_parts: list[torch.Tensor] = []
+        ej_parts: list[torch.Tensor] = []
 
-    for s in range(0, num_edges, chunk_size):
-        e = min(s + chunk_size, num_edges)
+        for s in range(0, num_edges, chunk_size):
+            e = min(s + chunk_size, num_edges)
 
-        # Pairwise midpoint distance for rows [s, e) vs all columns.
-        diff = mid[s:e].unsqueeze(1) - mid.unsqueeze(0)      # (K, E, 2)
-        dist = diff.norm(dim=-1)                              # (K, E)
+            # Pairwise midpoint distance for rows [s, e) vs all columns.
+            diff = mid[s:e].unsqueeze(1) - mid.unsqueeze(0)      # (K, E, 2)
+            dist = diff.norm(dim=-1)                              # (K, E)
 
-        # Proximity reach: two segments can come within `proximity_threshold`
-        # only if their midpoints are within (half_len_i + half_len_j +
-        # proximity_threshold). This is a necessary (not sufficient)
-        # condition — the downstream segment-segment test filters further.
-        reach = (
-            half_len[s:e].unsqueeze(1)
-            + half_len.unsqueeze(0)
-            + proximity_threshold
-        )
-        nearby = dist < reach  # (K, E)
+            # Proximity reach: two segments can come within `proximity_threshold`
+            # only if their midpoints are within (half_len_i + half_len_j +
+            # proximity_threshold). This is a necessary (not sufficient)
+            # condition — the downstream segment-segment test filters further.
+            reach = (
+                half_len[s:e].unsqueeze(1)
+                + half_len.unsqueeze(0)
+                + proximity_threshold
+            )
+            nearby = dist < reach  # (K, E)
 
-        # Keep only upper-triangular pairs (global row index < col index).
-        row_global = torch.arange(s, e, device=device).unsqueeze(1)  # (K, 1)
-        nearby = nearby & (all_col.unsqueeze(0) > row_global)
+            # Keep only upper-triangular pairs (global row index < col index).
+            row_global = torch.arange(s, e, device=device).unsqueeze(1)  # (K, 1)
+            nearby = nearby & (all_col.unsqueeze(0) > row_global)
 
-        # Same-batch filter (excludes cross-batch pairs).
-        if batch_index is not None:
-            nearby = nearby & (
-                batch_index[s:e].unsqueeze(1) == batch_index.unsqueeze(0)
+            # Same-batch filter (excludes cross-batch pairs).
+            if batch_index is not None:
+                nearby = nearby & (
+                    batch_index[s:e].unsqueeze(1) == batch_index.unsqueeze(0)
+                )
+
+            # Exclude adjacent edges (sharing a node).
+            src_i = src[s:e].unsqueeze(1)   # (K, 1)
+            dst_i = dst[s:e].unsqueeze(1)
+            src_j = src.unsqueeze(0)        # (1, E)
+            dst_j = dst.unsqueeze(0)
+            shares = (
+                (src_i == src_j)
+                | (src_i == dst_j)
+                | (dst_i == src_j)
+                | (dst_i == dst_j)
+            )
+            nearby = nearby & ~shares
+
+            # Gather surviving pair indices within this chunk.
+            rows, cols = torch.where(nearby)
+            if rows.numel() > 0:
+                ei_parts.append(rows + s)
+                ej_parts.append(cols)
+
+        if not ei_parts:
+            return (
+                torch.empty(0, dtype=torch.long, device=device),
+                torch.empty(0, dtype=torch.long, device=device),
             )
 
-        # Exclude adjacent edges (sharing a node).
-        src_i = src[s:e].unsqueeze(1)   # (K, 1)
-        dst_i = dst[s:e].unsqueeze(1)
-        src_j = src.unsqueeze(0)        # (1, E)
-        dst_j = dst.unsqueeze(0)
-        shares = (
-            (src_i == src_j)
-            | (src_i == dst_j)
-            | (dst_i == src_j)
-            | (dst_i == dst_j)
-        )
-        nearby = nearby & ~shares
-
-        # Gather surviving pair indices within this chunk.
-        rows, cols = torch.where(nearby)
-        if rows.numel() > 0:
-            ei_parts.append(rows + s)
-            ej_parts.append(cols)
-
-    if not ei_parts:
-        return (
-            torch.empty(0, dtype=torch.long, device=device),
-            torch.empty(0, dtype=torch.long, device=device),
-        )
-
-    return torch.cat(ei_parts), torch.cat(ej_parts)
+        return torch.cat(ei_parts), torch.cat(ej_parts)
 
 
 def compute_edge_directions(

@@ -248,9 +248,9 @@ def encode_room(
 
     area_sq_inches = room.area * (to_inches ** 2)
 
-    # Ensure non-zero for aspect ratio
-    width = max(width, 0.01)
-    depth = max(depth, 0.01)
+    # Ensure non-zero for aspect ratio (1 inch floor — 0.01" is nonsensical)
+    width = max(width, 1.0)
+    depth = max(depth, 1.0)
     aspect = np.clip(width / depth, 0.1, 10.0)
 
     label_code = _ROOM_LABEL_TO_INT.get(room.label.lower().strip(), 0)

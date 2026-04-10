@@ -583,8 +583,10 @@ class TestMultiPanelWall:
         # Take a non-skip action (select first valid panel candidate)
         mask = env.action_masks()
         valid_actions = [a for a in range(len(mask)) if mask[a] > 0 and a != 0]
-        if not valid_actions:
-            pytest.skip("No valid panel candidates for this wall")
+        assert valid_actions, (
+            "KG returned no panel candidates for a 500-inch wall — "
+            "check KnowledgeGraphStore fixture has panels with max_length < 500"
+        )
 
         wall_edge_id = env._walls[0].edge_id
 
@@ -594,10 +596,13 @@ class TestMultiPanelWall:
         # Check if the wall still has remaining length
         remaining = env.wall_remaining_inches.get(wall_edge_id, 0.0)
 
-        if remaining > 6.0:
-            # The env should stay on the same wall (idx 0)
-            assert env.current_wall_idx == 0
-            assert env.phase == "panelization"
+        # A 500-inch wall should need multiple panels (typical max ~240 inches)
+        assert remaining > 6.0, (
+            f"Expected remaining > 6.0 for a 500-inch wall, got {remaining}"
+        )
+        # The env should stay on the same wall (idx 0)
+        assert env.current_wall_idx == 0
+        assert env.phase == "panelization"
 
     def test_wall_remaining_tracked(self, kg_store):
         """wall_remaining_inches should be populated after first panel step."""
@@ -649,7 +654,7 @@ class TestMultiPanelWall:
         env.reset()
 
         env.step(0)  # SKIP
-        wall_edge_id = 0
+        wall_edge_id = env._walls[0].edge_id
         remaining = env.wall_remaining_inches.get(wall_edge_id, 0.0)
         assert remaining == 0.0
 

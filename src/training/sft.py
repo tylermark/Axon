@@ -503,7 +503,9 @@ class SFTTrainer:
 
         # Average metrics over epoch
         avg_metrics: dict[str, float] = {
-            key: sum(values) / len(values) for key, values in epoch_metrics.items()
+            key: sum(values) / len(values)
+            for key, values in epoch_metrics.items()
+            if values
         }
         avg_metrics["epoch"] = float(self.current_epoch)
         avg_metrics["epoch_time_s"] = time.monotonic() - epoch_start
@@ -664,7 +666,9 @@ class SFTTrainer:
 
         # Average all eval metrics
         avg_metrics: dict[str, float] = {
-            key: sum(values) / len(values) for key, values in all_metrics.items()
+            key: sum(values) / len(values)
+            for key, values in all_metrics.items()
+            if values
         }
         avg_metrics["eval/epoch"] = float(self.current_epoch)
 

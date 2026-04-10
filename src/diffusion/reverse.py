@@ -394,6 +394,7 @@ class ReverseDiffusion(nn.Module):
         sqrt_ab = sch._gather(sch.sqrt_alphas_cumprod, t)
         sqrt_1mab = sch._gather(sch.sqrt_one_minus_alphas_cumprod, t)
         x0_pred = (x_t - sqrt_1mab * eps_pred) / sqrt_ab.clamp(min=1e-8)
+        x0_pred = x0_pred.clamp(-10.0, 10.0)
 
         coef1 = sch._gather(sch.posterior_mean_coef1, t)
         coef2 = sch._gather(sch.posterior_mean_coef2, t)
@@ -515,6 +516,7 @@ class ReverseDiffusion(nn.Module):
             # --- DDIM coordinate update ---
             ab_t = self.scheduler._gather(self.scheduler.alphas_cumprod, t)
             x0_pred = (x_t - (1.0 - ab_t).sqrt() * eps_pred) / ab_t.sqrt().clamp(min=1e-8)
+            x0_pred = x0_pred.clamp(-10.0, 10.0)
 
             is_last = i == len(timesteps) - 1
             if not is_last:
@@ -529,16 +531,13 @@ class ReverseDiffusion(nn.Module):
                 ab_prev = torch.ones_like(ab_t)
 
             # Sigma and direction
-            sigma = (
-                eta
-                * (
-                    (1.0 - ab_prev)
-                    / (1.0 - ab_t).clamp(min=1e-8)
-                    * (1.0 - ab_t / ab_prev.clamp(min=1e-8))
-                )
-                .clamp(min=0.0)
-                .sqrt()
-            )
+            sigma_sq = (
+                eta**2
+                * (1.0 - ab_prev)
+                / (1.0 - ab_t).clamp(min=1e-8)
+                * (1.0 - ab_t / ab_prev.clamp(min=1e-8))
+            ).clamp(min=0.0)
+            sigma = sigma_sq.sqrt()
             dir_xt = (1.0 - ab_prev - sigma**2).clamp(min=0.0).sqrt() * eps_pred
             x_t = ab_prev.sqrt() * x0_pred + dir_xt
             if eta > 0 and not is_last:

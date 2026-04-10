@@ -400,6 +400,10 @@ class ArchCAD400KDataset(Dataset):
         raw = self._zip_file.read(self._file_names[idx])
         return _parse_archcad_json(raw, self.max_primitives)
 
+    def __del__(self) -> None:
+        if getattr(self, "_zip_file", None) is not None:
+            self._zip_file.close()
+
     # -- Dataset interface --------------------------------------------------
 
     def __len__(self) -> int:
@@ -493,6 +497,10 @@ class FloorPlanCADDataset(Dataset):
             handle = tarfile.open(archive_path, "r:xz")  # noqa: SIM115
             self._tar_handles[archive_path] = handle
         return self._tar_handles[archive_path]
+
+    def __del__(self) -> None:
+        for handle in getattr(self, "_tar_handles", {}).values():
+            handle.close()
 
     def __len__(self) -> int:
         return len(self._members)

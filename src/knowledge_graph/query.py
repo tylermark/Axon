@@ -601,6 +601,8 @@ def _compute_panel_layout(
         return quantity, cut_lengths, round(max(waste, 0.0), 4)
 
     # With splicing: distribute evenly across minimum number of panels
+    if wall_length_inches <= 0:
+        return 0, [], 0.0
     panels_needed = math.ceil(wall_length_inches / panel.max_length_inches)
     even_length = wall_length_inches / panels_needed
 

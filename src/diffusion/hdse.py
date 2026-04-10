@@ -201,7 +201,7 @@ class RandomWalkEncoding(nn.Module):
         trans_k = trans
         bias = trans_k.unsqueeze(-1) * self.step_weights[0]  # (B, N, N, n_out)
         for k in range(1, self.num_steps):
-            trans_k = torch.bmm(trans_k, trans)
+            trans_k = torch.bmm(trans_k, trans).clamp(min=0.0, max=1.0)
             bias = bias + trans_k.unsqueeze(-1) * self.step_weights[k]
 
         return bias

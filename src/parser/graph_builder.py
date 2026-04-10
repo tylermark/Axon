@@ -336,6 +336,11 @@ def build_raw_graph(
     edges = np.stack([mapped_starts[valid_indices], mapped_ends[valid_indices]], axis=1)
 
     # -- Build filtered metadata arrays --
+    n_raw = len(raw_starts)
+    if len(edge_op_types) != n_raw:
+        raise ValueError(
+            f"edge metadata length mismatch: {len(edge_op_types)} op_types vs {n_raw} edges"
+        )
     operator_types = [edge_op_types[i] for i in valid_indices]
 
     stroke_widths = np.array(edge_stroke_widths, dtype=np.float64)[valid_indices]

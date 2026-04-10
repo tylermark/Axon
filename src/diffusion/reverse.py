@@ -171,6 +171,7 @@ class GraphTransformerBlock(nn.Module):
         if node_mask is not None:
             scores = scores.masked_fill(~node_mask[:, None, None, :], -1e9)
         attn = self.drop_sa(nnf.softmax(scores, dim=-1))
+        attn = attn.nan_to_num(0.0)
         sa_out = attn @ v  # (bsz, nh, seq, dk)
         sa_out = sa_out.transpose(1, 2).contiguous().view(bsz, seq, dim)
         x = x + self.out_sa(sa_out)
@@ -187,6 +188,7 @@ class GraphTransformerBlock(nn.Module):
             if context_mask is not None:
                 scores = scores.masked_fill(~context_mask[:, None, None, :], -1e9)
             attn = self.drop_ca(nnf.softmax(scores, dim=-1))
+            attn = attn.nan_to_num(0.0)
             ca_out = (attn @ v_c).transpose(1, 2).contiguous().view(bsz, seq, dim)
             x = x + self.out_ca(ca_out)
 

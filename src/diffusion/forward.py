@@ -118,8 +118,7 @@ class ForwardDiffusion(nn.Module):
         Returns:
             (B, N, N) noised adjacency (float, values in {0, 1}).
         """
-        alpha_bar = self.scheduler.get_alpha_bar(t).squeeze(-1)  # (B, 1)
-        alpha_bar = alpha_bar.unsqueeze(-1)  # (B, 1, 1) for broadcasting
+        alpha_bar = self.scheduler.get_alpha_bar(t)  # (B, 1, 1) for broadcasting
 
         # Bernoulli mask: True where the original edge value is kept.
         keep_mask = torch.rand_like(a_0) < alpha_bar

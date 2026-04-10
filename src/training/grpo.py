@@ -85,6 +85,17 @@ class GRPOConfig:
     Expensive (eval only): hiou, ged, betti.
     """
 
+    coord_scale: float = 1.0
+    """Coordinate scale for MSE normalization in coord_mse reward.
+
+    Set this to the typical magnitude of your coordinate system:
+    - For normalized coordinates in [0, 1]: use 1.0 (default)
+    - For pixel coordinates in [0, 512]: use 512.0
+    - For pixel coordinates in [0, 1024]: use 1024.0
+
+    The MSE is normalized by (coord_scale ** 2) before computing the reward.
+    """
+
     checkpoint_dir: str = "checkpoints/grpo"
     """Directory for saving checkpoints."""
 
@@ -199,7 +210,7 @@ def compute_composite_reward(
         weights: Component weights.  Keys with weight 0 are skipped.
         max_ged: Maximum GED for normalization.
         wall_thickness: Default wall thickness for HIoU computation.
-        coord_scale: Expected coordinate range for MSE normalization.
+        coord_scale: Coordinate scale for MSE normalization (default 1.0).
 
     Returns:
         Tuple of (total_reward, component_dict) with per-component rewards.
@@ -215,8 +226,8 @@ def compute_composite_reward(
         n = min(len(pred_nodes), len(gt_nodes))
         if n > 0:
             mse = float(np.mean((pred_nodes[:n] - gt_nodes[:n]) ** 2))
-            mse_norm = mse / max(coord_scale ** 2, 1e-12)
-            coord_reward = max(0.0, 1.0 - mse_norm)
+            mse_normalized = mse / (coord_scale ** 2)
+            coord_reward = max(0.0, 1.0 - mse_normalized)
         else:
             coord_reward = 0.0
         components["coord_mse"] = coord_reward
@@ -390,6 +401,7 @@ class GRPOTrainer:
                     "clip_ratio": config.clip_ratio,
                     "temperature": config.temperature,
                     "reward_weights": config.reward_weights,
+                    "coord_scale": config.coord_scale,
                 },
                 resume="allow",
             )

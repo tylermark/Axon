@@ -9,8 +9,8 @@ from the frozen SFT reference model.
 Algorithm per iteration:
     1. For each input, sample ``group_size`` output graphs via temperature
        sampling through the diffusion model.
-    2. Score each output: R = w_hiou * HIoU + w_ged * (1 - GED/max_ged)
-                            + w_betti * (1 - betti_error).
+    2. Score each output with a composite reward (default: coord_mse +
+       adj_f1; expensive metrics like HIoU/GED/Betti available for eval).
     3. Compute group-relative advantages (normalize rewards within group).
     4. Policy gradient update clipped to ``clip_ratio``.
     5. KL divergence penalty against the frozen SFT reference model.
@@ -104,7 +104,22 @@ class GRPOConfig:
     """PPO-style clipping ratio for policy gradient updates."""
 
     max_ged: float = 50.0
-    """Maximum GED for reward normalization. GED values above this are clipped."""
+    """Maximum GED for reward normalization. GED values above this are clipped.
+    Only used when ``ged`` has nonzero weight."""
+
+    coord_scale: float = 1.0
+    """Expected coordinate range for coord_mse normalization.
+
+    Must be > 0.  MSE is divided by coord_scale**2 before forming the
+    reward, so the reward stays in [0, 1] regardless of coordinate units.
+    For data normalised to [0, 1] the default of 1.0 is correct.  Set to
+    the bounding-box diagonal (or similar) for unnormalised coordinates."""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.coord_scale, (int, float)) or self.coord_scale <= 0:
+            raise ValueError(
+                f"coord_scale must be a positive number, got {self.coord_scale!r}"
+            )
 
     gradient_clip: float = 1.0
     """Max gradient norm for clipping."""
@@ -151,14 +166,16 @@ def compute_composite_reward(
     weights: dict[str, float],
     max_ged: float = 50.0,
     wall_thickness: float = 2.0,
+    coord_scale: float = 1.0,
 ) -> tuple[float, dict[str, float]]:
     """Compute composite geometric quality reward for a single sample.
 
     Supports both fast (training-friendly) and expensive (eval-only) metrics:
 
     Fast metrics (sub-millisecond, safe for GRPO inner loop):
-        - ``coord_mse``: 1 - MSE between predicted and GT node coordinates.
-          Bounded to [0, 1] via clamping.
+        - ``coord_mse``: ``max(0, 1 - MSE / coord_scale²)``.  Normalised
+          by ``coord_scale`` so the reward stays in [0, 1] regardless of
+          coordinate units.
         - ``adj_f1``: F1 score between predicted and GT adjacency matrices.
 
     Expensive metrics (seconds-to-minutes per sample, use for eval only):
@@ -175,6 +192,7 @@ def compute_composite_reward(
         weights: Component weights.  Keys with weight 0 are skipped.
         max_ged: Maximum GED for normalization.
         wall_thickness: Default wall thickness for HIoU computation.
+        coord_scale: Expected coordinate range for MSE normalization.
 
     Returns:
         Tuple of (total_reward, component_dict) with per-component rewards.
@@ -184,13 +202,14 @@ def compute_composite_reward(
     components: dict[str, float] = {}
     total = 0.0
 
-    # --- coord_mse (fast): 1 - clamped MSE between node positions ---
+    # --- coord_mse (fast): 1 - normalised MSE between node positions ---
     coord_mse_weight = weights.get("coord_mse", 0.0)
     if coord_mse_weight > 0:
         n = min(len(pred_nodes), len(gt_nodes))
         if n > 0:
             mse = float(np.mean((pred_nodes[:n] - gt_nodes[:n]) ** 2))
-            coord_reward = max(0.0, 1.0 - mse)
+            mse_norm = mse / max(coord_scale ** 2, 1e-12)
+            coord_reward = max(0.0, 1.0 - mse_norm)
         else:
             coord_reward = 0.0
         components["coord_mse"] = coord_reward
@@ -402,6 +421,7 @@ class GRPOTrainer:
             gt_edges,
             weights=self.config.reward_weights,
             max_ged=self.config.max_ged,
+            coord_scale=self.config.coord_scale,
         )
         return reward
 
@@ -578,6 +598,7 @@ class GRPOTrainer:
                     gt_edges,
                     weights=self.config.reward_weights,
                     max_ged=self.config.max_ged,
+                    coord_scale=self.config.coord_scale,
                 )
                 rewards.append(r)
 

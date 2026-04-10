@@ -11,7 +11,6 @@ Reference: AGENTS.md §Wall Classifier Agent, TASKS.md CL-005.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -30,11 +29,11 @@ from src.classifier.rules import (
     score_by_thickness,
 )
 from src.classifier.taxonomy import (
+    DEFAULT_SIGNAL_WEIGHTS,
     HIGH_CONFIDENCE,
     LOW_CONFIDENCE,
     MEDIUM_CONFIDENCE,
     REVIEW_THRESHOLD,
-    DEFAULT_SIGNAL_WEIGHTS,
     SignalWeights,
 )
 

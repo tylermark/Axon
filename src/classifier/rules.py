@@ -12,8 +12,6 @@ Reference: AGENTS.md §Wall Classifier Agent, TASKS.md CL-002..CL-004.
 
 from __future__ import annotations
 
-from math import pi
-
 import numpy as np
 
 from docs.interfaces.classified_wall_graph import FireRating
@@ -25,10 +23,8 @@ from src.classifier.taxonomy import (
     FIRE_RATING_THICKNESS_MAP,
     THICKNESS_MEDIUM_MAX,
     THICKNESS_MEDIUM_MIN,
-    THICKNESS_THICK_MIN,
     THICKNESS_THIN_MAX,
 )
-
 
 # ---------------------------------------------------------------------------
 # CL-002: Thickness-based classification

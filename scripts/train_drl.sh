@@ -12,11 +12,22 @@ echo "════════════════════════�
 echo " Axon DRL Training (Panelization + Placement)"
 echo "══════════════════════════════════════════"
 
+# Check if --no-resplan flag is present
+USE_RESPLAN=true
+for arg in "$@"; do
+    if [ "$arg" = "--no-resplan" ]; then
+        USE_RESPLAN=false
+        break
+    fi
+done
+
 RESPLAN_PATH="${RESPLAN_PATH:-datasets/ResPlan/ResPlan.pkl}"
-if [ ! -f "$RESPLAN_PATH" ]; then
-    echo "ERROR: Dataset not found: $RESPLAN_PATH" >&2
-    echo "  Set RESPLAN_PATH or place the file at the default location." >&2
-    exit 1
+if [ "$USE_RESPLAN" = "true" ]; then
+    if [ ! -f "$RESPLAN_PATH" ]; then
+        echo "ERROR: Dataset not found: $RESPLAN_PATH" >&2
+        echo "  Set RESPLAN_PATH or place the file at the default location." >&2
+        exit 1
+    fi
 fi
 
 python -m src.training.drl_training \

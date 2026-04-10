@@ -116,7 +116,14 @@ class GRPOConfig:
     the bounding-box diagonal (or similar) for unnormalised coordinates."""
 
     def __post_init__(self) -> None:
-        if not isinstance(self.coord_scale, (int, float)) or self.coord_scale <= 0:
+        import math
+
+        if (
+            isinstance(self.coord_scale, bool)
+            or not isinstance(self.coord_scale, (int, float))
+            or not math.isfinite(self.coord_scale)
+            or self.coord_scale <= 0
+        ):
             raise ValueError(
                 f"coord_scale must be a positive number, got {self.coord_scale!r}"
             )

@@ -573,6 +573,8 @@ def _compute_panel_layout(
     - If ``wall_length > panel.max_length``: multiple panels with splicing.
     - Minimize waste by distributing length evenly.
     """
+    if wall_length_inches <= 0:
+        return 0, [], 0.0
     if wall_length_inches <= panel.max_length_inches:
         # Single panel, cut to exact length
         cut_length = max(wall_length_inches, panel.min_length_inches)

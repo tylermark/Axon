@@ -137,6 +137,10 @@ class ExperimentTracker:
             except Exception:
                 logger.warning("Failed to log artifact '%s' to W&B.", name, exc_info=True)
 
+    def __del__(self) -> None:
+        if hasattr(self, "_log_file") and not self._log_file.closed:
+            self._log_file.close()
+
     def finish(self) -> None:
         """Finalise the tracking run.
 

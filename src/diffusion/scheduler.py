@@ -63,7 +63,7 @@ class DiffusionScheduler(nn.Module):
         # Posterior q(x_{t-1} | x_t, x_0).
         posterior_variance = betas * (1.0 - alphas_cumprod_prev) / (1.0 - alphas_cumprod)
         # At t=0 the denominator is 0; clamp to avoid NaN.
-        posterior_variance = posterior_variance.clamp(min=1e-20)
+        posterior_variance = posterior_variance.clamp(min=1e-7)
 
         posterior_mean_coef1 = betas * alphas_cumprod_prev.sqrt() / (1.0 - alphas_cumprod)
         posterior_mean_coef2 = (1.0 - alphas_cumprod_prev) * alphas.sqrt() / (1.0 - alphas_cumprod)

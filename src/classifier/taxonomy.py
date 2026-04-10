@@ -14,7 +14,6 @@ from dataclasses import dataclass
 from docs.interfaces.classified_wall_graph import FireRating
 from docs.interfaces.graph_to_serializer import WallType
 
-
 # ---------------------------------------------------------------------------
 # Thickness thresholds (PDF user units, 72 units/inch)
 # ---------------------------------------------------------------------------

@@ -473,7 +473,7 @@ class PanelizationEnv(gym.Env):
             # Compute placement coordinates within the room. If multiple pods
             # are being placed, offset from the base centroid.
             if room.boundary_nodes and all(
-                idx < len(self._nodes) for idx in room.boundary_nodes
+                0 <= idx < len(self._nodes) for idx in room.boundary_nodes
             ):
                 boundary_coords = self._nodes[room.boundary_nodes]
                 min_xy = boundary_coords.min(axis=0) * to_inches
@@ -709,7 +709,7 @@ class PanelizationEnv(gym.Env):
                 # Multi-panel continuation — remaining already has corner
                 # deductions baked in from the initial step() computation.
                 eff_length = remaining
-            elif sub_segments and self.current_sub_segment_idx < len(sub_segments):
+            elif sub_segments and 0 <= self.current_sub_segment_idx < len(sub_segments):
                 eff_length = sub_segments[self.current_sub_segment_idx].length_inches
                 # Apply corner thickness deduction (DRL-008)
                 corner_deduction = get_corner_thickness_deduction(

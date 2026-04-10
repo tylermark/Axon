@@ -77,9 +77,13 @@ class GRPOConfig:
     """KL divergence penalty coefficient against the reference model."""
 
     reward_weights: dict[str, float] = field(
-        default_factory=lambda: {"hiou": 0.4, "ged": 0.3, "betti": 0.3}
+        default_factory=lambda: {"coord_mse": 0.5, "adj_f1": 0.5}
     )
-    """Weights for the composite reward function components."""
+    """Weights for the composite reward function components.
+
+    Fast (use for training): coord_mse, adj_f1.
+    Expensive (eval only): hiou, ged, betti.
+    """
 
     checkpoint_dir: str = "checkpoints/grpo"
     """Directory for saving checkpoints."""
@@ -150,27 +154,80 @@ def compute_composite_reward(
 ) -> tuple[float, dict[str, float]]:
     """Compute composite geometric quality reward for a single sample.
 
-    R = w_hiou * HIoU + w_ged * (1 - GED/max_ged) + w_betti * (1 - betti_error)
+    Supports both fast (training-friendly) and expensive (eval-only) metrics:
 
-    Each component is bounded to [0, 1] so the total reward is in
-    [0, w_hiou + w_ged + w_betti].
+    Fast metrics (sub-millisecond, safe for GRPO inner loop):
+        - ``coord_mse``: 1 - MSE between predicted and GT node coordinates.
+          Bounded to [0, 1] via clamping.
+        - ``adj_f1``: F1 score between predicted and GT adjacency matrices.
+
+    Expensive metrics (seconds-to-minutes per sample, use for eval only):
+        - ``hiou``: Hungarian-matched IoU over wall segments.  O(N_pred * N_gt)
+          Shapely polygon intersections — prohibitive for >100 edges.
+        - ``ged``: Exact graph edit distance via networkx.  Exponential time.
+        - ``betti``: Betti number error (connected components + cycles).
 
     Args:
         pred_nodes: Predicted node positions, shape (N, 2).
         pred_edges: Predicted edges, shape (E, 2).
         gt_nodes: Ground truth node positions, shape (N_gt, 2).
         gt_edges: Ground truth edges, shape (E_gt, 2).
-        weights: Component weights {'hiou', 'ged', 'betti'}.
+        weights: Component weights.  Keys with weight 0 are skipped.
         max_ged: Maximum GED for normalization.
         wall_thickness: Default wall thickness for HIoU computation.
 
     Returns:
         Tuple of (total_reward, component_dict) with per-component rewards.
     """
+    import numpy as np
+
     components: dict[str, float] = {}
     total = 0.0
 
-    # --- HIoU ---
+    # --- coord_mse (fast): 1 - clamped MSE between node positions ---
+    coord_mse_weight = weights.get("coord_mse", 0.0)
+    if coord_mse_weight > 0:
+        n = min(len(pred_nodes), len(gt_nodes))
+        if n > 0:
+            mse = float(np.mean((pred_nodes[:n] - gt_nodes[:n]) ** 2))
+            coord_reward = max(0.0, 1.0 - mse)
+        else:
+            coord_reward = 0.0
+        components["coord_mse"] = coord_reward
+        total += coord_mse_weight * coord_reward
+
+    # --- adj_f1 (fast): F1 between predicted and GT adjacency ---
+    adj_f1_weight = weights.get("adj_f1", 0.0)
+    if adj_f1_weight > 0:
+        n = min(len(pred_nodes), len(gt_nodes))
+        if n > 0:
+            # Build dense adjacency for the shared node set
+            pred_adj = np.zeros((n, n), dtype=np.float32)
+            for s, d in pred_edges:
+                if s < n and d < n:
+                    pred_adj[int(s), int(d)] = 1.0
+                    pred_adj[int(d), int(s)] = 1.0
+            gt_adj = np.zeros((n, n), dtype=np.float32)
+            for s, d in gt_edges:
+                if s < n and d < n:
+                    gt_adj[int(s), int(d)] = 1.0
+                    gt_adj[int(d), int(s)] = 1.0
+            # Upper triangle only
+            triu = np.triu_indices(n, k=1)
+            p = pred_adj[triu]
+            g = gt_adj[triu]
+            tp = float(np.sum(p * g))
+            fp = float(np.sum(p * (1 - g)))
+            fn = float(np.sum((1 - p) * g))
+            precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+            recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+            f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+        else:
+            f1 = 0.0
+        components["adj_f1"] = f1
+        total += adj_f1_weight * f1
+
+    # --- HIoU (expensive: O(E_pred * E_gt) Shapely calls) ---
     hiou_weight = weights.get("hiou", 0.0)
     if hiou_weight > 0:
         try:
@@ -186,7 +243,7 @@ def compute_composite_reward(
         except Exception:
             components["hiou"] = 0.0
 
-    # --- GED ---
+    # --- GED (expensive: exponential time via networkx) ---
     ged_weight = weights.get("ged", 0.0)
     if ged_weight > 0:
         try:

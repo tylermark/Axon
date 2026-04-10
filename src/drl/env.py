@@ -359,7 +359,13 @@ class PanelizationEnv(gym.Env):
 
         if self.phase == "panelization":
             # Clamp action to panelization range
-            clamped_action = min(action, PANELIZATION_ACTION_SIZE - 1)
+            if action < 0 or action >= PANELIZATION_ACTION_SIZE:
+                logger.warning(
+                    "Out-of-bounds panelization action %d (max %d), clamping",
+                    action,
+                    PANELIZATION_ACTION_SIZE - 1,
+                )
+            clamped_action = max(0, min(action, PANELIZATION_ACTION_SIZE - 1))
             wall = self._walls[self.current_wall_idx]
             classification = self._classifications[self.current_wall_idx]
 
@@ -376,7 +382,7 @@ class PanelizationEnv(gym.Env):
             to_inches = self._scale / 25.4 if self._scale != 1.0 else 1.0 / 72.0
 
             sub_segments = self._sub_segment_map.get(wall.edge_id, [])
-            if sub_segments and self.current_sub_segment_idx < len(sub_segments):
+            if sub_segments and 0 <= self.current_sub_segment_idx < len(sub_segments):
                 current_sub = sub_segments[self.current_sub_segment_idx]
                 effective_length = current_sub.length_inches
             else:
@@ -447,7 +453,13 @@ class PanelizationEnv(gym.Env):
 
         elif self.phase == "placement":
             # Clamp action to placement range
-            clamped_action = min(action, PLACEMENT_ACTION_SIZE - 1)
+            if action < 0 or action >= PLACEMENT_ACTION_SIZE:
+                logger.warning(
+                    "Out-of-bounds placement action %d (max %d), clamping",
+                    action,
+                    PLACEMENT_ACTION_SIZE - 1,
+                )
+            clamped_action = max(0, min(action, PLACEMENT_ACTION_SIZE - 1))
             room = self._rooms[self.current_room_idx]
 
             # Compute room dimensions and centroid for pod positioning
@@ -460,7 +472,9 @@ class PanelizationEnv(gym.Env):
             # ── DRL-006: Pod position calculation ──
             # Compute placement coordinates within the room. If multiple pods
             # are being placed, offset from the base centroid.
-            if room.boundary_nodes:
+            if room.boundary_nodes and all(
+                idx < len(self._nodes) for idx in room.boundary_nodes
+            ):
                 boundary_coords = self._nodes[room.boundary_nodes]
                 min_xy = boundary_coords.min(axis=0) * to_inches
                 max_xy = boundary_coords.max(axis=0) * to_inches

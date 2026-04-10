@@ -234,7 +234,7 @@ def encode_room(
     to_inches = scale / 25.4 if scale != 1.0 else 1.0 / PDF_UNITS_PER_INCH
 
     # Get boundary node coordinates
-    if room.boundary_nodes:
+    if room.boundary_nodes and all(idx < len(nodes) for idx in room.boundary_nodes):
         boundary_coords = nodes[room.boundary_nodes]
         min_xy = boundary_coords.min(axis=0) * to_inches
         max_xy = boundary_coords.max(axis=0) * to_inches

@@ -277,7 +277,7 @@ def graph_to_token_features(
     # Page dimensions for normalization
     page_w = max(graph.page_width, 1e-6)
     page_h = max(graph.page_height, 1e-6)
-    page_diag = math.sqrt(page_w**2 + page_h**2)
+    page_diag = max(math.sqrt(page_w**2 + page_h**2), 1.0)
 
     # Edge start/end coordinates
     if n_valid > 0:

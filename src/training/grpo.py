@@ -86,14 +86,17 @@ class GRPOConfig:
     """
 
     coord_scale: float = 1.0
-    """Coordinate scale for MSE normalization in coord_mse reward.
+    """Expected coordinate range for coord_mse normalization.
 
-    Set this to the typical magnitude of your coordinate system:
+    Must be > 0.  MSE is divided by coord_scale**2 before forming the
+    reward, so the reward stays in [0, 1] regardless of coordinate units.
+    For data normalised to [0, 1] the default of 1.0 is correct.  Set to
+    the bounding-box diagonal (or similar) for unnormalised coordinates.
+
+    Common values:
     - For normalized coordinates in [0, 1]: use 1.0 (default)
     - For pixel coordinates in [0, 512]: use 512.0
     - For pixel coordinates in [0, 1024]: use 1024.0
-
-    The MSE is normalized by (coord_scale ** 2) before computing the reward.
     """
 
     checkpoint_dir: str = "checkpoints/grpo"
@@ -117,14 +120,6 @@ class GRPOConfig:
     max_ged: float = 50.0
     """Maximum GED for reward normalization. GED values above this are clipped.
     Only used when ``ged`` has nonzero weight."""
-
-    coord_scale: float = 1.0
-    """Expected coordinate range for coord_mse normalization.
-
-    Must be > 0.  MSE is divided by coord_scale**2 before forming the
-    reward, so the reward stays in [0, 1] regardless of coordinate units.
-    For data normalised to [0, 1] the default of 1.0 is correct.  Set to
-    the bounding-box diagonal (or similar) for unnormalised coordinates."""
 
     def __post_init__(self) -> None:
         import math
@@ -515,9 +510,10 @@ class GRPOTrainer:
     ) -> torch.Tensor:
         """Estimate KL divergence between current model and reference model.
 
-        Uses the VLB loss difference as a proxy for KL divergence:
-        KL ~ L_current - L_reference. This is an approximation since both
-        models are evaluated on the same noised samples.
+        Uses the absolute VLB loss difference as a proxy for KL divergence:
+        KL ~ |L_current - L_reference|. Penalizes divergence in either
+        direction — the model should stay close to the SFT reference
+        whether its loss is higher or lower.
 
         Args:
             x_0: (B, N, 2) clean node coordinates.
@@ -527,7 +523,7 @@ class GRPOTrainer:
             context_mask: Context mask.
 
         Returns:
-            Scalar KL divergence estimate.
+            Scalar KL divergence estimate (always non-negative).
         """
         # Current model loss
         current_loss = self.model(x_0, a_0, context, node_mask, context_mask)
@@ -536,8 +532,8 @@ class GRPOTrainer:
         with torch.no_grad():
             ref_loss = self.reference_model(x_0, a_0, context, node_mask, context_mask)
 
-        # KL proxy: positive when current model diverges from reference
-        kl = nnf.relu(current_loss.total - ref_loss.total)
+        # KL proxy: penalize divergence in either direction
+        kl = torch.abs(current_loss.total - ref_loss.total)
         return kl
 
     # ------------------------------------------------------------------
@@ -580,6 +576,10 @@ class GRPOTrainer:
         all_rewards: list[float] = []
         all_advantages: list[float] = []
         policy_losses: list[torch.Tensor] = []
+        coord_mins: list[float] = []
+        coord_maxs: list[float] = []
+        n_clipped = 0
+        n_total_adv = 0
 
         import numpy as np
 
@@ -607,6 +607,12 @@ class GRPOTrainer:
             rewards = []
             for sample in samples:
                 pred_nodes = sample["node_positions"][:n_valid].cpu().numpy()
+                if pred_nodes.size == 0:
+                    coord_mins.append(float('nan'))
+                    coord_maxs.append(float('nan'))
+                else:
+                    coord_mins.append(float(pred_nodes.min()))
+                    coord_maxs.append(float(pred_nodes.max()))
                 pred_adj = sample["adjacency"][:n_valid, :n_valid].cpu().numpy()
                 pred_edges = _adj_to_edge_list(pred_adj)
 
@@ -626,7 +632,7 @@ class GRPOTrainer:
             # 3. Compute group-relative advantages (normalize within group)
             rewards_arr = np.array(rewards)
             mean_r = rewards_arr.mean()
-            std_r = rewards_arr.std() + 1e-8
+            std_r = rewards_arr.std() + 1e-4  # Larger eps to prevent exploding advantages
             advantages = (rewards_arr - mean_r) / std_r
             all_advantages.extend(advantages.tolist())
 
@@ -656,6 +662,11 @@ class GRPOTrainer:
                     -self.config.clip_ratio,
                     self.config.clip_ratio,
                 )
+
+                # Track clipping stats
+                n_total_adv += 1
+                if abs(advantage) > self.config.clip_ratio:
+                    n_clipped += 1
 
                 # Negative advantage * loss: high reward -> decrease loss,
                 # low reward -> increase loss (but clipped)
@@ -698,11 +709,14 @@ class GRPOTrainer:
             "reward/max": float(rewards_np.max()),
             "advantage/mean": float(advantages_np.mean()),
             "advantage/std": float(advantages_np.std()),
+            "advantage/clip_ratio": n_clipped / max(n_total_adv, 1),
             "loss/policy": total_policy_loss.item(),
             "loss/kl": kl_div.item(),
             "loss/kl_penalty": kl_penalty.item(),
             "loss/grpo_total": grpo_loss.item(),
             "grad_norm": grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm,
+            "coords/min": float(np.min(coord_mins)) if coord_mins else 0.0,
+            "coords/max": float(np.max(coord_maxs)) if coord_maxs else 0.0,
             "iteration": float(self.current_iteration),
         }
 

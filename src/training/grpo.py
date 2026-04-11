@@ -607,8 +607,12 @@ class GRPOTrainer:
             rewards = []
             for sample in samples:
                 pred_nodes = sample["node_positions"][:n_valid].cpu().numpy()
-                coord_mins.append(float(pred_nodes.min()))
-                coord_maxs.append(float(pred_nodes.max()))
+                if pred_nodes.size == 0:
+                    coord_mins.append(float('nan'))
+                    coord_maxs.append(float('nan'))
+                else:
+                    coord_mins.append(float(pred_nodes.min()))
+                    coord_maxs.append(float(pred_nodes.max()))
                 pred_adj = sample["adjacency"][:n_valid, :n_valid].cpu().numpy()
                 pred_edges = _adj_to_edge_list(pred_adj)
 

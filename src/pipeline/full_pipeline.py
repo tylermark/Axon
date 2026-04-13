@@ -16,23 +16,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import numpy as np
-
-from docs.interfaces.drl_output import (
-    PanelAssignment,
-    PanelizationResult,
-    PanelMap,
-    PlacementMap,
-    ProductPlacement,
-    RoomPlacement,
-    WallPanelization,
-)
+from docs.interfaces.drl_output import PanelizationResult
 from src.bom.export import export_bom
 from src.bom.generator import generate_bom
 from src.classifier.classifier import classify_wall_graph
-from src.drl.env import PanelizationEnv
-from src.drl.train import greedy_policy
 from src.feasibility.report import generate_feasibility_report
+from src.optimization.solver import OptimizationConfig, optimize_panelization
 from src.pipeline.config import AxonConfig
 from src.pipeline.layer1 import Layer1Pipeline
 from src.transplant.assembler import assemble_walls
@@ -88,179 +77,6 @@ class PipelineResult:
     processing_time_seconds: float = 0.0
     stage_errors: dict[str, str] = field(default_factory=dict)
     metadata: dict[str, object] = field(default_factory=dict)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# DRL env -> PanelizationResult converter
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-def _build_panelization_result(
-    env: PanelizationEnv,
-    classified_graph: ClassifiedWallGraph,
-) -> PanelizationResult:
-    """Convert a completed PanelizationEnv episode into a PanelizationResult.
-
-    The env stores raw tuples in ``wall_assignments`` and SKUs in
-    ``room_assignments``.  This function lifts those into the typed
-    dataclass hierarchy expected by the Feasibility, BOM, and Transplant
-    agents.
-
-    Args:
-        env: A fully-stepped PanelizationEnv (episode terminated).
-        classified_graph: The ClassifiedWallGraph the env was built from.
-
-    Returns:
-        A populated PanelizationResult.
-    """
-    env_results = env.get_results()
-    wall_assignments: dict[int, list[tuple[str, float]]] = env_results["wall_assignments"]
-    room_assignments: dict[int, str] = env_results["room_assignments"]
-
-    # ── Build PanelMap ──────────────────────────────────────────────────────
-    wall_panelizations: list[WallPanelization] = []
-    total_material_inches = 0.0
-    all_panel_skus: set[str] = set()
-    all_splice_skus: set[str] = set()
-    total_panel_count = 0
-    total_splice_count = 0
-
-    for seg in classified_graph.graph.wall_segments:
-        wall_length_inches = seg.length * _PDF_UNITS_TO_INCHES
-        assignments = wall_assignments.get(seg.edge_id, [])
-        is_panelizable = bool(assignments)
-
-        panel_list: list[PanelAssignment] = []
-        position = 0.0
-        for idx, (sku, cut_length) in enumerate(assignments):
-            panel_list.append(
-                PanelAssignment(
-                    panel_sku=sku,
-                    cut_length_inches=cut_length,
-                    position_along_wall=position,
-                    panel_index=idx,
-                )
-            )
-            position += cut_length
-            all_panel_skus.add(sku)
-
-        mat_total = sum(pa.cut_length_inches for pa in panel_list)
-        waste = max(0.0, mat_total - wall_length_inches)
-        waste_pct = (waste / mat_total * 100.0) if mat_total > 0 else 0.0
-        requires_splice = len(panel_list) > 1
-
-        wp = WallPanelization(
-            edge_id=seg.edge_id,
-            wall_length_inches=round(wall_length_inches, 4),
-            panels=panel_list,
-            requires_splice=requires_splice,
-            splice_connection_skus=[],
-            total_material_inches=round(mat_total, 4),
-            waste_inches=round(waste, 4),
-            waste_percentage=round(waste_pct, 4),
-            is_panelizable=is_panelizable,
-            rejection_reason="" if is_panelizable else "No valid panel assignment from DRL agent.",
-        )
-        wall_panelizations.append(wp)
-
-        if is_panelizable:
-            total_material_inches += mat_total
-            total_panel_count += len(panel_list)
-            total_splice_count += max(0, len(panel_list) - 1)
-
-    panelized_count = sum(1 for wp in wall_panelizations if wp.is_panelizable)
-
-    panel_map = PanelMap(
-        walls=wall_panelizations,
-        panelized_wall_count=panelized_count,
-        total_wall_count=len(wall_panelizations),
-        unique_panel_skus=sorted(all_panel_skus),
-        unique_splice_skus=sorted(all_splice_skus),
-    )
-
-    # ── Build PlacementMap ──────────────────────────────────────────────────
-    room_placements: list[RoomPlacement] = []
-    all_pod_skus: set[str] = set()
-
-    for room in classified_graph.graph.rooms:
-        if room.is_exterior:
-            continue
-        pod_sku = room_assignments.get(room.room_id)
-        has_placement = pod_sku is not None
-        placement = None
-        if has_placement and pod_sku:
-            # Position at room centroid (approximate from boundary nodes).
-            if room.boundary_nodes and classified_graph.graph.nodes.shape[0] > 0:
-                node_coords = classified_graph.graph.nodes[room.boundary_nodes]
-                centroid = node_coords.mean(axis=0)
-            else:
-                centroid = np.zeros(2, dtype=np.float64)
-
-            placement = ProductPlacement(
-                pod_sku=pod_sku,
-                position=centroid,
-                orientation_deg=0.0,
-                clearance_met=True,
-                clearance_margins={},
-                confidence=1.0,
-            )
-            all_pod_skus.add(pod_sku)
-
-        room_placements.append(
-            RoomPlacement(
-                room_id=room.room_id,
-                room_label=room.label,
-                room_area_sqft=round(room.area * (_PDF_UNITS_TO_INCHES**2) / 144.0, 4),
-                placement=placement,
-                is_eligible=True,
-                rejection_reason="" if has_placement else "No compatible pod found by DRL agent.",
-            )
-        )
-
-    placed_count = sum(1 for rp in room_placements if rp.placement is not None)
-    eligible_count = len(room_placements)
-
-    placement_map = PlacementMap(
-        rooms=room_placements,
-        placed_room_count=placed_count,
-        eligible_room_count=eligible_count,
-        total_room_count=eligible_count,
-        unique_pod_skus=sorted(all_pod_skus),
-    )
-
-    # ── Summary statistics ──────────────────────────────────────────────────
-    total_wall_length = sum(
-        seg.length * _PDF_UNITS_TO_INCHES for seg in classified_graph.graph.wall_segments
-    )
-    panelized_length = sum(wp.wall_length_inches for wp in wall_panelizations if wp.is_panelizable)
-    coverage_pct = (panelized_length / total_wall_length * 100.0) if total_wall_length > 0 else 0.0
-
-    total_waste = sum(wp.waste_inches for wp in wall_panelizations)
-    waste_pct_total = (
-        (total_waste / total_material_inches * 100.0) if total_material_inches > 0 else 0.0
-    )
-    pod_rate = (placed_count / eligible_count * 100.0) if eligible_count > 0 else 0.0
-
-    w1, w2, w3 = 0.5, 0.3, 0.2
-    spur = (
-        w1 * (coverage_pct / 100.0) + w2 * (1.0 - waste_pct_total / 100.0) + w3 * (pod_rate / 100.0)
-    )
-    spur = max(0.0, min(spur, 1.0))
-
-    return PanelizationResult(
-        source_graph=classified_graph,
-        panel_map=panel_map,
-        placement_map=placement_map,
-        spur_score=round(spur, 4),
-        coverage_percentage=round(coverage_pct, 4),
-        waste_percentage=round(waste_pct_total, 4),
-        pod_placement_rate=round(pod_rate, 4),
-        total_panel_count=total_panel_count,
-        total_splice_count=total_splice_count,
-        policy_version="greedy",
-        episode_reward=env_results.get("total_reward", 0.0),
-        inference_steps=env_results.get("walls_covered", 0) + env_results.get("rooms_covered", 0),
-    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -360,27 +176,25 @@ def run_full_pipeline(
         result.processing_time_seconds = time.perf_counter() - t_start
         return result
 
-    # ── Stage 6: DRL panelization + placement ─────────────────────────────
-    logger.info("[pipeline] Stage 6: DRL panelization (greedy policy)")
+    # ── Stage 6: Panelization + placement (OR solver or DRL fallback) ────
+    opt_config = OptimizationConfig.from_pydantic(config.optimization)
+    backend = opt_config.solver_backend
+    logger.info("[pipeline] Stage 6: Panelization (backend=%s)", backend)
     panelization: PanelizationResult | None = None
     try:
-        env = PanelizationEnv(classified_graph=classified_graph, store=kg_store)
-        _obs, _info = env.reset()
-        terminated = truncated = False
-        while not (terminated or truncated):
-            action = greedy_policy(env)
-            _obs, _reward, terminated, truncated, _info = env.step(action)
-        panelization = _build_panelization_result(env, classified_graph)
+        panelization = optimize_panelization(
+            classified_graph, kg_store, opt_config,
+        )
         result.panelization = panelization
         logger.info(
-            "[pipeline] DRL done: SPUR=%.4f, coverage=%.1f%%, waste=%.1f%%",
+            "[pipeline] Panelization done: SPUR=%.4f, coverage=%.1f%%, waste=%.1f%%",
             panelization.spur_score,
             panelization.coverage_percentage,
             panelization.waste_percentage,
         )
     except Exception as exc:
-        logger.exception("[pipeline] DRL FAILED: %s", exc)
-        result.stage_errors["drl"] = str(exc)
+        logger.exception("[pipeline] Panelization FAILED: %s", exc)
+        result.stage_errors["panelization"] = str(exc)
 
     # ── Stage 7: Feasibility report ───────────────────────────────────────
     if panelization is not None:

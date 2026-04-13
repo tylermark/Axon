@@ -43,6 +43,9 @@ dependencies = [
     # Experiment tracking
     "wandb>=0.16.0,<1.0",
 
+    # Operations Research (panelization optimization)
+    "ortools>=9.8,<10.0",
+
     # Utilities
     "numpy>=1.26.0,<3.0",
     "scipy>=1.12.0,<2.0",

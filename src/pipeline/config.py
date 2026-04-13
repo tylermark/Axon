@@ -496,6 +496,45 @@ class TrainingConfig(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class PanelizationOptimizationConfig(BaseModel):
+    """Configuration for OR-based panelization optimization (Stage 7).
+
+    Controls the cutting stock + CP-SAT pipeline that replaces the DRL
+    agent for wall panelization and pod placement.
+    """
+
+    solver_backend: str = Field(
+        default="cpsat",
+        description="Solver backend: 'cpsat' (OR-Tools) or 'drl' (DRL fallback).",
+    )
+    cpsat_time_limit_seconds: float = Field(
+        default=30.0,
+        ge=1.0,
+        description="CP-SAT solver time limit in seconds.",
+    )
+    sku_minimization_weight: float = Field(
+        default=0.1,
+        ge=0.0,
+        description="Weight for SKU diversity minimization (0 = disabled).",
+    )
+    cost_weight: float = Field(
+        default=0.05,
+        ge=0.0,
+        description="Weight for cost minimization (0 = disabled).",
+    )
+    max_solutions_per_wall: int = Field(
+        default=5,
+        ge=1,
+        le=20,
+        description="Maximum candidate cutting stock solutions per wall.",
+    )
+    drl_fallback_threshold: int = Field(
+        default=500,
+        ge=1,
+        description="Wall count above which DRL fallback is used.",
+    )
+
+
 class AxonConfig(BaseModel):
     """Top-level configuration for the Axon pipeline.
 
@@ -516,6 +555,9 @@ class AxonConfig(BaseModel):
     physics: PhysicsConfig = Field(default_factory=PhysicsConfig)
     serializer: SerializerConfig = Field(default_factory=SerializerConfig)
     training: TrainingConfig = Field(default_factory=TrainingConfig)
+    optimization: PanelizationOptimizationConfig = Field(
+        default_factory=PanelizationOptimizationConfig,
+    )
 
     # Global settings
     device: str = Field(

@@ -620,11 +620,21 @@ class MPMPreTrainer:
                 )
 
             # External callbacks.
+            pre_lrs = [pg["lr"] for pg in self.optimizer.param_groups]
             _stop = False
             for cb in self.callbacks:
                 cb.on_epoch_end(epoch, optimizer=self.optimizer, model=self.model)
                 if getattr(cb, "should_stop", False):
                     _stop = True
+            # If a callback adjusted LR, propagate to scheduler base_lrs
+            # so that subsequent scheduler.step() calls use the new base.
+            post_lrs = [pg["lr"] for pg in self.optimizer.param_groups]
+            if pre_lrs != post_lrs:
+                self.scheduler.base_lrs = post_lrs
+                logger.info(
+                    "Callback adjusted LR — updated scheduler base_lrs: %s",
+                    post_lrs,
+                )
             if _stop:
                 logger.info("Early stop requested by callback at epoch %d.", epoch)
                 break

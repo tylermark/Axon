@@ -26,6 +26,27 @@ class DecisionType(str, Enum):
     SNAPSHOT = "SNAPSHOT"
     ALERT = "ALERT"
 
+    @property
+    def severity(self) -> int:
+        """Numeric severity for priority comparison.
+
+        Higher values represent more critical decisions. Used by the
+        orchestrator to allow escalation even when a previous lower-priority
+        decision has not yet been acknowledged.
+
+        Ordering: CONTINUE < SNAPSHOT < ADJUST_LR < ALERT < EARLY_STOP.
+        """
+        return _SEVERITY[self]
+
+
+_SEVERITY: dict[DecisionType, int] = {
+    DecisionType.CONTINUE: 0,
+    DecisionType.SNAPSHOT: 1,
+    DecisionType.ADJUST_LR: 2,
+    DecisionType.ALERT: 3,
+    DecisionType.EARLY_STOP: 4,
+}
+
 
 class LRAction(str, Enum):
     """Specific learning-rate adjustment action."""
@@ -101,7 +122,7 @@ class Decision(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     lr_action: LRAction | None = None
     lr_factor: float | None = Field(
-        default=None, description="Multiply current LR by this factor."
+        default=None, gt=0.0, description="Multiply current LR by this factor."
     )
     vision_insight: str | None = None
 

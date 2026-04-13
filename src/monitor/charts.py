@@ -11,6 +11,7 @@ import logging
 
 import numpy as np
 
+from .analyzer import _ema
 from .schemas import MetricHistory, RunSnapshot, TrendAnalysis
 
 logger = logging.getLogger(__name__)
@@ -25,16 +26,6 @@ try:
     _HAS_MPL = True
 except ImportError:
     _HAS_MPL = False
-
-
-def _ema(values: np.ndarray, span: int) -> np.ndarray:
-    """Compute exponential moving average (same as analyzer._ema)."""
-    alpha = 2.0 / (span + 1)
-    result = np.empty_like(values)
-    result[0] = values[0]
-    for i in range(1, len(values)):
-        result[i] = alpha * values[i] + (1 - alpha) * result[i - 1]
-    return result
 
 
 class ChartRenderer:
@@ -68,25 +59,27 @@ class ChartRenderer:
             PNG image as bytes.
         """
         fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-        fig.suptitle(
-            f"Training Monitor — {snapshot.run_name} "
-            f"(step {snapshot.current_step})",
-            fontsize=14,
-            fontweight="bold",
-        )
+        try:
+            fig.suptitle(
+                f"Training Monitor — {snapshot.run_name} "
+                f"(step {snapshot.current_step})",
+                fontsize=14,
+                fontweight="bold",
+            )
 
-        self._plot_losses(axes[0, 0], snapshot)
-        self._plot_metrics(axes[0, 1], snapshot)
-        self._plot_lr(axes[1, 0], snapshot)
-        self._plot_health(axes[1, 1], analysis)
+            self._plot_losses(axes[0, 0], snapshot)
+            self._plot_metrics(axes[0, 1], snapshot)
+            self._plot_lr(axes[1, 0], snapshot)
+            self._plot_health(axes[1, 1], analysis)
 
-        fig.tight_layout(rect=[0, 0, 1, 0.95])
+            fig.tight_layout(rect=[0, 0, 1, 0.95])
 
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=120, bbox_inches="tight")
-        plt.close(fig)
-        buf.seek(0)
-        return buf.read()
+            buf = io.BytesIO()
+            fig.savefig(buf, format="png", dpi=120, bbox_inches="tight")
+            buf.seek(0)
+            return buf.read()
+        finally:
+            plt.close(fig)
 
     def _plot_losses(self, ax: plt.Axes, snapshot: RunSnapshot) -> None:
         """Plot loss curves with EMA overlay."""

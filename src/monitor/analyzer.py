@@ -167,7 +167,7 @@ class TrendAnalyzer:
             return False
 
         hist = snapshot.metric_histories[loss_key]
-        if len(hist.values) < self._t.plateau_min_epochs:
+        if len(hist.values) < self._t.plateau_min_epochs + 1:
             return False
 
         values = np.array(hist.values, dtype=np.float64)

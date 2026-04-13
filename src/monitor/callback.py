@@ -79,6 +79,11 @@ class ColabTrainingCallback:
             self._control_dir,
         )
 
+    def reset(self) -> None:
+        """Reset state between training phases."""
+        self.should_stop = False
+        self._run_id = None
+
     def on_epoch_end(
         self,
         epoch: int,
@@ -99,7 +104,9 @@ class ColabTrainingCallback:
             save_dir: Override checkpoint save directory.
         """
         if not self._run_id:
-            return
+            self._run_id = self._detect_run_id()
+            if not self._run_id:
+                return
 
         control_path = self._control_dir / f"control_{self._run_id}.json"
         if not control_path.exists():

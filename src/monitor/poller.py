@@ -42,8 +42,6 @@ class WandbPoller:
         if api_key:
             kwargs["api_key"] = api_key
         self._api = wandb.Api(**kwargs)
-        # Cache: run_id -> last seen step, to fetch only incremental data
-        self._last_step: dict[str, int] = {}
 
     def poll(self) -> list[RunSnapshot]:
         """Poll all watched projects for active runs.
@@ -132,7 +130,11 @@ class WandbPoller:
 
         current_step = 0
         if "_step" in history_df.columns:
-            current_step = int(history_df["_step"].dropna().iloc[-1])
+            step_vals = history_df["_step"].dropna()
+            if not step_vals.empty:
+                current_step = int(step_vals.iloc[-1])
+            elif len(history_df) > 0:
+                current_step = len(history_df) - 1
         elif len(history_df) > 0:
             current_step = len(history_df) - 1
 
@@ -142,8 +144,6 @@ class WandbPoller:
             run_config = dict(run.config) if run.config else {}
         except Exception:
             pass
-
-        self._last_step[run_id] = current_step
 
         return RunSnapshot(
             run_id=run_id,

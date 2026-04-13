@@ -41,7 +41,7 @@ class MonitorOrchestrator:
             api_key=config.wandb_api_key,
         )
         self._analyzer = TrendAnalyzer(config.thresholds)
-        self._engine = DecisionEngine()
+        self._engine = DecisionEngine(config.thresholds)
 
         # Drive channel
         self._drive = None
@@ -121,9 +121,38 @@ class MonitorOrchestrator:
 
             result.decisions.append(decision)
 
-            # 5. Write control file (skip CONTINUE, skip if unacknowledged)
+            # 5. Write control file (skip CONTINUE, skip if unacknowledged
+            #    unless the new decision is higher severity)
             if decision.decision != DecisionType.CONTINUE and self._drive:
-                if self._drive.is_acknowledged(snapshot.run_id):
+                write_allowed = True
+                if not self._drive.is_acknowledged(snapshot.run_id):
+                    # Check whether the new decision outranks what's on disk
+                    existing = self._drive.read_control(snapshot.run_id)
+                    if (
+                        existing is not None
+                        and decision.decision.severity
+                        > existing.decision.decision.severity
+                    ):
+                        logger.info(
+                            "Escalating for run %s — overwriting "
+                            "unacknowledged %s with higher-severity %s",
+                            snapshot.run_id,
+                            existing.decision.decision.value,
+                            decision.decision.value,
+                        )
+                    elif existing is not None:
+                        logger.warning(
+                            "Skipping write for run %s — previous decision "
+                            "%s not yet acknowledged (new: %s, same or lower "
+                            "severity)",
+                            snapshot.run_id,
+                            existing.decision.decision.value,
+                            decision.decision.value,
+                        )
+                        write_allowed = False
+                    # existing is None: no file on disk, safe to write
+
+                if write_allowed:
                     control = ControlFile(
                         timestamp=datetime.now(timezone.utc),
                         monitor_id=self._monitor_id,
@@ -141,12 +170,6 @@ class MonitorOrchestrator:
                             "Failed to write control file for run %s",
                             snapshot.run_id,
                         )
-                else:
-                    logger.info(
-                        "Skipping write for run %s — previous decision "
-                        "not yet acknowledged",
-                        snapshot.run_id,
-                    )
 
             if decision.decision not in (DecisionType.CONTINUE, DecisionType.SNAPSHOT):
                 has_issues = True

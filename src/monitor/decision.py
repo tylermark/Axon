@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 
+from .config import AnalysisThresholds
 from .schemas import Decision, DecisionType, LRAction, RunSnapshot, TrendAnalysis
 
 logger = logging.getLogger(__name__)
@@ -20,11 +21,12 @@ class DecisionEngine:
     reduced, preventing infinite adjustment loops.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, thresholds: AnalysisThresholds | None = None) -> None:
         # run_id -> number of LR reductions applied
         self._lr_reductions: dict[str, int] = {}
-        # run_id -> last decision type
-        self._last_decision: dict[str, DecisionType] = {}
+        self._overfit_severity_threshold = (
+            thresholds.overfit_severity_threshold if thresholds else 1.5
+        )
 
     def decide(self, analysis: TrendAnalysis, run: RunSnapshot) -> Decision:
         """Produce a decision from the trend analysis.
@@ -43,7 +45,6 @@ class DecisionEngine:
         decision = self._evaluate(analysis, run_id, reductions)
 
         # Track state
-        self._last_decision[run_id] = decision.decision
         if decision.decision == DecisionType.ADJUST_LR and decision.lr_action == LRAction.REDUCE:
             self._lr_reductions[run_id] = reductions + 1
 
@@ -79,7 +80,7 @@ class DecisionEngine:
             )
 
         # 2. Overfitting — severe
-        if analysis.overfitting_detected and analysis.overfitting_severity > 1.5:
+        if analysis.overfitting_detected and analysis.overfitting_severity > self._overfit_severity_threshold:
             return Decision(
                 decision=DecisionType.EARLY_STOP,
                 reasoning=(
@@ -149,4 +150,3 @@ class DecisionEngine:
     def reset(self, run_id: str) -> None:
         """Reset tracked state for a run (e.g., after a restart)."""
         self._lr_reductions.pop(run_id, None)
-        self._last_decision.pop(run_id, None)

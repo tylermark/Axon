@@ -547,7 +547,7 @@ def _solve_wall_with_openings(
         for j, seg in enumerate(sub_segments):
             # Apply corner deductions to wall-endpoint sub-segments only.
             seg_length = seg.length_inches
-            if j == 0 and not seg.left_bounded_by_opening:
+            if j == 0 and seg.start_offset_inches == 0.0:
                 seg_length = max(0.0, seg_length - start_deduction)
             if j == last_idx and not seg.right_bounded_by_opening:
                 seg_length = max(0.0, seg_length - end_deduction)

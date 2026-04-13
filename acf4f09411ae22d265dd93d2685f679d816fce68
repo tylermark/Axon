@@ -1,0 +1,27 @@
+src/optimization/cutting_stock.py
+  45d45db6e1763356 380-416,463-466,489-491,494,516-517,523-527,535,547-553,555,561
+src/optimization/result_builder.py
+  45d45db6e1763356 68-69,80,168,188
+src/optimization/solver.py
+  45d45db6e1763356 207-216,221
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "acf4f09411ae22d265dd93d2685f679d816fce68",
+  "prompts": {
+    "45d45db6e1763356": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "86c759fe-4e7e-405f-99e6-7bd3fbea4538",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "tylermark",
+      "messages": [],
+      "total_additions": 79,
+      "total_deletions": 16,
+      "accepted_lines": 79,
+      "overriden_lines": 0
+    }
+  }
+}

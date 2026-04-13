@@ -32,9 +32,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# PDF user units to inches (72 pt/inch).
-_PDF_UNITS_TO_INCHES: float = 1.0 / 72.0
-
 
 def build_panelization_result(
     classified_graph: ClassifiedWallGraph,
@@ -68,6 +65,8 @@ def build_panelization_result(
         wall_splice_skus = {}
 
     graph = classified_graph.graph
+    scale = graph.scale_factor
+    to_inches = scale / 25.4 if scale != 1.0 else 1.0 / 72.0
 
     # ── Build PanelMap ────────────────────────────────────────────────────
     wall_panelizations: list[WallPanelization] = []
@@ -78,7 +77,7 @@ def build_panelization_result(
     total_splice_count = 0
 
     for seg in graph.wall_segments:
-        wall_length_inches = seg.length * _PDF_UNITS_TO_INCHES
+        wall_length_inches = seg.length * to_inches
         assignments = wall_assignments.get(seg.edge_id, [])
         is_panelizable = bool(assignments)
 
@@ -166,7 +165,7 @@ def build_panelization_result(
             RoomPlacement(
                 room_id=room.room_id,
                 room_label=room.label,
-                room_area_sqft=round(room.area * (_PDF_UNITS_TO_INCHES ** 2) / 144.0, 4),
+                room_area_sqft=round(room.area * (to_inches ** 2) / 144.0, 4),
                 placement=placement,
                 is_eligible=True,
                 rejection_reason="" if has_placement else f"No compatible pod found by {solver_name}.",
@@ -186,7 +185,7 @@ def build_panelization_result(
 
     # ── Summary statistics ────────────────────────────────────────────────
     total_wall_length = sum(
-        seg.length * _PDF_UNITS_TO_INCHES for seg in graph.wall_segments
+        seg.length * to_inches for seg in graph.wall_segments
     )
     panelized_length = sum(
         wp.wall_length_inches for wp in wall_panelizations if wp.is_panelizable

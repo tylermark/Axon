@@ -23,7 +23,6 @@ from src.drl.constraints import (
     WallSubSegment,
     compute_junction_map,
     compute_wall_sub_segments,
-    get_corner_thickness_deduction,
 )
 from src.drl.state import fire_rating_to_hours, wall_type_to_panel_type
 from src.knowledge_graph.query import (
@@ -378,6 +377,43 @@ def _compute_solution_score(
     return round(min(max(score, 0.0), 1.0), 4)
 
 
+# ── Corner deduction helpers ──────────────────────────────────────────────────
+
+
+def _get_endpoint_deductions(
+    wall: WallSegment,
+    junction_map: dict,
+    walls: list,
+    scale: float,
+) -> tuple[float, float]:
+    """Return ``(start_deduction_inches, end_deduction_inches)`` for a wall.
+
+    Mirrors the per-junction logic of ``get_corner_thickness_deduction`` from
+    ``src.drl.constraints``, but returns the start and end values separately so
+    callers can apply them to the correct sub-segment of a wall with openings.
+    """
+    to_inches = scale / 25.4 if scale != 1.0 else 1.0 / 72.0
+    wall_lookup = {w.edge_id: w for w in walls}
+    deductions = [0.0, 0.0]
+
+    for i, node_id in enumerate((wall.start_node, wall.end_node)):
+        junction = junction_map.get(node_id)
+        if junction is None or junction.junction_type not in ("corner", "T", "cross"):
+            continue
+        for adj_eid in junction.wall_edge_ids:
+            if adj_eid == wall.edge_id:
+                continue
+            adj_wall = wall_lookup.get(adj_eid)
+            if adj_wall is None:
+                continue
+            angle_diff = abs(wall.angle - adj_wall.angle) % math.pi
+            if abs(angle_diff - math.pi / 2.0) < math.radians(10.0):
+                deductions[i] += adj_wall.thickness * to_inches
+                break  # one deduction per junction node
+
+    return (deductions[0], deductions[1])
+
+
 # ── Top-level per-wall API ────────────────────────────────────────────────────
 
 
@@ -424,10 +460,10 @@ def solve_all_walls(
         fire_hours = fire_rating_to_hours(cls.fire_rating)
         wall_length_inches = wall.length * to_inches
 
-        # Corner thickness deduction
-        corner_deduction = get_corner_thickness_deduction(
-            wall.edge_id, junction_map, walls, scale,
-        )
+        # Corner thickness deduction — computed per-end so we can apply to
+        # the correct boundary sub-segment when the wall has openings.
+        start_ded, end_ded = _get_endpoint_deductions(wall, junction_map, walls, scale)
+        corner_deduction = start_ded + end_ded
         effective_length = max(0.0, wall_length_inches - corner_deduction)
 
         # Split around openings
@@ -450,10 +486,12 @@ def solve_all_walls(
                 rejection_reason="" if solutions else "No valid panel configuration found.",
             ))
         else:
-            # Wall with openings — solve each sub-segment, then combine
+            # Wall with openings — solve each sub-segment, then combine.
+            # Pass endpoint deductions so the first/last sub-segments are
+            # shortened correctly at the wall corners.
             combined_solutions = _solve_wall_with_openings(
                 wall, sub_segments, panel_type, fire_hours,
-                store, max_solutions_per_wall,
+                store, max_solutions_per_wall, start_ded, end_ded,
             )
             results.append(WallCuttingResult(
                 wall_edge_id=wall.edge_id,
@@ -475,11 +513,18 @@ def _solve_wall_with_openings(
     fire_rating_hours: float,
     store: KnowledgeGraphStore,
     max_solutions: int,
+    start_deduction: float = 0.0,
+    end_deduction: float = 0.0,
 ) -> list[CuttingStockSolution]:
     """Solve cutting stock for a wall split into sub-segments by openings.
 
     For each candidate panel type, solve all sub-segments independently
     then combine into a single wall-level solution.
+
+    ``start_deduction`` and ``end_deduction`` are the corner thickness
+    deductions (in inches) at the wall's start and end nodes respectively.
+    They are applied to the first and last sub-segments that are bounded by
+    the wall endpoints (not by openings).
     """
     candidates = _get_candidate_panels(
         store, wall_type=panel_type, fire_rating_hours=fire_rating_hours,
@@ -487,6 +532,7 @@ def _solve_wall_with_openings(
     if not candidates:
         return []
 
+    last_idx = len(sub_segments) - 1
     solutions: list[CuttingStockSolution] = []
 
     for panel in candidates:
@@ -498,14 +544,21 @@ def _solve_wall_with_openings(
         total_pieces = 0
         feasible = True
 
-        for seg in sub_segments:
-            if seg.length_inches < panel.min_length_inches:
+        for j, seg in enumerate(sub_segments):
+            # Apply corner deductions to wall-endpoint sub-segments only.
+            seg_length = seg.length_inches
+            if j == 0 and not seg.left_bounded_by_opening:
+                seg_length = max(0.0, seg_length - start_deduction)
+            if j == last_idx and not seg.right_bounded_by_opening:
+                seg_length = max(0.0, seg_length - end_deduction)
+
+            if seg_length < panel.min_length_inches:
                 # Sub-segment too short — skip this panel type
                 feasible = False
                 break
 
             sol = _solve_for_panel_type(
-                wall.edge_id, panel, seg.length_inches, store,
+                wall.edge_id, panel, seg_length, store,
             )
             if sol is None:
                 feasible = False

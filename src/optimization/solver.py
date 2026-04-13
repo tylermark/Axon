@@ -204,9 +204,20 @@ def _run_drl_fallback(
     wall_assignments: dict[int, list[tuple[str, float]]] = env_results["wall_assignments"]
     room_assignments: dict[int, str] = env_results["room_assignments"]
 
+    # Extract pod rotation flags from DRL-006 placement tuples: (sku, x, y, rotated)
+    room_pod_placements: dict[int, list[tuple[str, float, float, bool]]] = env_results.get(
+        "room_pod_placements", {}
+    )
+    room_orientations: dict[int, bool] = {
+        room_id: placements[0][3]
+        for room_id, placements in room_pod_placements.items()
+        if placements
+    }
+
     return build_panelization_result(
         classified_graph=classified_graph,
         wall_assignments=wall_assignments,
         room_assignments=room_assignments,
+        room_orientations=room_orientations,
         solver_name="drl_greedy",
     )

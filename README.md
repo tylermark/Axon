@@ -14,14 +14,14 @@ PDF Floor Plan
   │   Output: Clean structural graph + room semantics
   │
   └─ Layer 2: Prefab Intelligence
-      Knowledge Graph → Wall Classifier → DRL Panelizer → DRL Placer
+      Knowledge Graph → Wall Classifier → OR Optimizer (CP-SAT)
       → Feasibility Scorer → BOM Generator → IFC Export
       Output: Panel schedule, BOM, feasibility report, IFC model
 ```
 
 **Layer 1** converts raw PDF geometry into a clean structural graph using self-supervised pre-training (Masked Primitive Modeling), graph diffusion denoising, and differentiable geometric constraints.
 
-**Layer 2** takes that graph and decides how to build it with Capsule's products. A Knowledge Graph stores the full product catalog (CFS panels, pods, machines, connections). A Deep Reinforcement Learning agent learns optimal panel selection and placement policies. The output is a complete fabrication package.
+**Layer 2** takes that graph and decides how to build it with Capsule's products. A Knowledge Graph stores the full product catalog (CFS panels, pods, machines, connections). An OR-based optimizer solves panel selection as a 1D cutting stock problem (per wall) and pod placement + cross-wall coordination as a CP-SAT constraint program — delivering provably optimal solutions in milliseconds. The output is a complete fabrication package.
 
 ## Quick Start
 
@@ -48,13 +48,13 @@ Training runs on Google Colab with GPU. Open `notebooks/axon_training_colab.ipyn
 | MPM | Self-supervised primitive reconstruction | ~10 min |
 | SFT | Supervised graph extraction (tokenizer + diffusion + constraints) | ~30-90 min |
 | GRPO | Quality annealing with reward-based optimization | TBD |
-| DRL | Panel selection + pod placement policy | ~5 min |
+| DRL | Fallback panelization policy (large instances >500 walls) | ~5 min |
 
 Shell scripts for non-Colab training:
 ```bash
 scripts/pretrain.sh    # MPM pre-training
 scripts/finetune.sh    # SFT + GRPO
-scripts/train_drl.sh   # DRL panelization
+scripts/train_drl.sh   # DRL fallback policy (optional)
 ```
 
 ## Project Structure
@@ -67,7 +67,8 @@ src/
 ├── constraints/      # Differentiable SAT solver (geometric axioms)
 ├── knowledge_graph/  # Capsule product catalog + query APIs
 ├── classifier/       # Wall type classification (bearing/partition/shear/fire)
-├── drl/              # Reinforcement learning (panelization + placement)
+├── optimization/     # OR-based panelizer: cutting stock (per wall) + CP-SAT (global)
+├── drl/              # DRL fallback policy (large instances >500 walls)
 ├── feasibility/      # Prefab percentage scoring + blockers
 ├── bom/              # Bill of materials + cost estimation
 ├── transplant/       # BIM assembly + IFC export
@@ -83,7 +84,8 @@ src/
 | ML Framework | PyTorch 2.x |
 | Graph Networks | PyTorch Geometric |
 | Knowledge Graph | NetworkX + JSON |
-| Reinforcement Learning | Stable-Baselines3 (MaskablePPO) |
+| Panelization Optimizer | OR-Tools CP-SAT (1D cutting stock + constraint programming) |
+| DRL Fallback | Stable-Baselines3 (MaskablePPO, large instances only) |
 | Vision Backbone | timm (HRNet / Swin) |
 | BIM/IFC Export | IfcOpenShell |
 | Experiment Tracking | Weights & Biases |

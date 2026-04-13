@@ -369,6 +369,7 @@ class MPMPreTrainer:
         model: MPMModel,
         dataset: Dataset,
         config: MPMConfig,
+        callbacks: list | None = None,
     ) -> None:
         self.config = config
         self.device = _resolve_device(config.device)
@@ -392,6 +393,9 @@ class MPMPreTrainer:
             drop_last=True,
             persistent_workers=config.num_workers > 0,
         )
+
+        # External callbacks (e.g. ColabTrainingCallback).
+        self.callbacks = callbacks or []
 
         # State.
         self.current_epoch = 0
@@ -614,6 +618,26 @@ class MPMPreTrainer:
                     {f"epoch/{k}": v for k, v in metrics.items()},
                     step=self.global_step,
                 )
+
+            # External callbacks.
+            pre_lrs = [pg["lr"] for pg in self.optimizer.param_groups]
+            _stop = False
+            for cb in self.callbacks:
+                cb.on_epoch_end(epoch, optimizer=self.optimizer, model=self.model)
+                if getattr(cb, "should_stop", False):
+                    _stop = True
+            # If a callback adjusted LR, propagate to scheduler base_lrs
+            # so that subsequent scheduler.step() calls use the new base.
+            post_lrs = [pg["lr"] for pg in self.optimizer.param_groups]
+            if pre_lrs != post_lrs:
+                self.scheduler.base_lrs = post_lrs
+                logger.info(
+                    "Callback adjusted LR — updated scheduler base_lrs: %s",
+                    post_lrs,
+                )
+            if _stop:
+                logger.info("Early stop requested by callback at epoch %d.", epoch)
+                break
 
             # Checkpoint.
             if (epoch + 1) % self.config.checkpoint_every == 0:

@@ -1,0 +1,23 @@
+README.md
+  45d45db6e1763356 17,24,51,57,70-71,87-88
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "20edaf9d0e60650ce1a17c6da21e3bf2c64fac0f",
+  "prompts": {
+    "45d45db6e1763356": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "86c759fe-4e7e-405f-99e6-7bd3fbea4538",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "tylermark",
+      "messages": [],
+      "total_additions": 19,
+      "total_deletions": 7,
+      "accepted_lines": 19,
+      "overriden_lines": 0
+    }
+  }
+}

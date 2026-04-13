@@ -1,9 +1,11 @@
 # Autonomous Training Monitor — configuration
 # Used by: python -m src.monitor once|watch [--config monitor.yaml]
 
+wandb_entity: tylerbeteag8-capsule-mfg
+
 watches:
   - name: mpm
-    project: axon
+    project: axon-mpm
     metrics:
       - train/coord_loss
       - train/type_loss
@@ -25,10 +27,10 @@ watches:
     project: axon-grpo
     metrics:
       - reward/mean
-      - kl/mean
+      - loss/kl
       - loss/policy
-      - loss/total
-    train_loss_key: loss/total
+      - loss/grpo_total
+    train_loss_key: loss/grpo_total
 
   - name: drl
     project: axon-drl

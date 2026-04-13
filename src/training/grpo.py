@@ -343,6 +343,7 @@ class GRPOTrainer:
         reference_model: GraphDiffusionModel,
         dataset: Dataset,  # type: ignore[type-arg]
         config: GRPOConfig,
+        callbacks: list | None = None,
     ) -> None:
         self.config = config
         self.device = _resolve_device(config.device)
@@ -372,6 +373,9 @@ class GRPOTrainer:
             self.model.parameters(),
             lr=config.learning_rate,
         )
+
+        # External callbacks (e.g. ColabTrainingCallback).
+        self.callbacks = callbacks or []
 
         # Training state
         self.current_iteration = 0
@@ -776,6 +780,17 @@ class GRPOTrainer:
             if (iteration + 1) % self.config.save_every_n_iterations == 0:
                 self.save_checkpoint(f"iter_{iteration + 1:06d}.pt")
 
+            # External callbacks (called every save interval).
+            if (iteration + 1) % self.config.save_every_n_iterations == 0:
+                _stop = False
+                for cb in self.callbacks:
+                    cb.on_epoch_end(iteration, optimizer=self.optimizer, model=self.model)
+                    if getattr(cb, "should_stop", False):
+                        _stop = True
+                if _stop:
+                    logger.info("Early stop requested by callback at iteration %d.", iteration)
+                    break
+
         # Final checkpoint
         self.save_checkpoint("final.pt")
         logger.info("GRPO training complete after %d iterations.", self.config.num_iterations)
@@ -846,6 +861,7 @@ class GRPOTrainer:
         diffusion_config: Any,
         dataset: Dataset,  # type: ignore[type-arg]
         grpo_config: GRPOConfig,
+        callbacks: list | None = None,
     ) -> GRPOTrainer:
         """Create a GRPOTrainer from a saved SFT checkpoint.
 
@@ -881,6 +897,7 @@ class GRPOTrainer:
             reference_model=reference_model,
             dataset=dataset,
             config=grpo_config,
+            callbacks=callbacks,
         )
 
 

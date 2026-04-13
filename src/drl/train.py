@@ -805,6 +805,7 @@ def train_drl(
     config: DRLTrainingConfig | None = None,
     store: KnowledgeGraphStore | None = None,
     reward_weights: RewardWeights | None = None,
+    extra_callbacks: list | None = None,
 ) -> dict[str, Any]:
     """Train the DRL policy using MaskablePPO.
 
@@ -901,6 +902,10 @@ def train_drl(
     # W&B callback
     if config.use_wandb:
         callbacks.append(WandBLoggingCallback())
+
+    # External callbacks (e.g. ColabTrainingCallback wrapped as SB3 callback).
+    if extra_callbacks:
+        callbacks.extend(extra_callbacks)
 
     callback = CallbackList(callbacks)
 

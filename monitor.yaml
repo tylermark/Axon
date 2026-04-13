@@ -1,0 +1,50 @@
+# Autonomous Training Monitor — configuration
+# Used by: python -m src.monitor once|watch [--config monitor.yaml]
+
+watches:
+  - name: mpm
+    project: axon
+    metrics:
+      - train/coord_loss
+      - train/type_loss
+      - train/total_loss
+      - train/lr
+    train_loss_key: train/total_loss
+
+  - name: sft
+    project: axon-sft
+    metrics:
+      - loss/total
+      - loss/diffusion
+      - loss/constraint
+      - eval/loss/total
+    train_loss_key: loss/total
+    val_loss_key: eval/loss/total
+
+  - name: grpo
+    project: axon-grpo
+    metrics:
+      - reward/mean
+      - kl/mean
+      - loss/policy
+      - loss/total
+    train_loss_key: loss/total
+
+  - name: drl
+    project: axon-drl
+    metrics:
+      - eval/trained_reward
+      - eval/trained_spur
+      - eval/trained_wall_coverage
+
+thresholds:
+  plateau_window: 10
+  plateau_min_epochs: 15
+  plateau_relative_threshold: 0.001
+  overfit_min_epochs: 5
+  overfit_severity_threshold: 1.5
+  instability_window: 10
+  instability_cv_threshold: 0.3
+  spike_std_multiplier: 3.0
+
+vision_enabled: true

@@ -341,6 +341,7 @@ class SFTTrainer:
         dataset: Dataset,  # type: ignore[type-arg]
         eval_dataset: Dataset | None,  # type: ignore[type-arg]
         config: SFTConfig,
+        callbacks: list | None = None,
     ) -> None:
         self.config = config
         self.device = _resolve_device(config.device)
@@ -382,6 +383,9 @@ class SFTTrainer:
             warmup_steps=config.warmup_steps,
             total_steps=total_steps,
         )
+
+        # External callbacks (e.g. ColabTrainingCallback).
+        self.callbacks = callbacks or []
 
         # Training state
         self.current_epoch = 0
@@ -843,6 +847,16 @@ class SFTTrainer:
             # Periodic checkpoint
             if (epoch + 1) % self.config.save_every_n_epochs == 0:
                 self.save_checkpoint(f"epoch_{epoch + 1:04d}.pt")
+
+            # External callbacks.
+            _stop = False
+            for cb in self.callbacks:
+                cb.on_epoch_end(epoch, optimizer=self.optimizer, model=self.diffusion_model)
+                if getattr(cb, "should_stop", False):
+                    _stop = True
+            if _stop:
+                logger.info("Early stop requested by callback at epoch %d.", epoch)
+                break
 
         # Final checkpoint
         self.save_checkpoint("final.pt")

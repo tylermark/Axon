@@ -316,10 +316,12 @@ class DRLTrainingPipeline:
         config: DRLTrainingConfig,
         store: KnowledgeGraphStore | None = None,
         reward_weights: RewardWeights | None = None,
+        extra_callbacks: list | None = None,
     ) -> None:
         self.config = config
         self._store = store
         self._reward_weights = reward_weights
+        self._extra_callbacks = extra_callbacks or []
         self._model: Any = None
         self._training_results: dict[str, Any] | None = None
 
@@ -421,6 +423,7 @@ class DRLTrainingPipeline:
             config=base_config,
             store=store,
             reward_weights=self._reward_weights,
+            extra_callbacks=self._extra_callbacks,
         )
 
         training_time = time.time() - start_time
